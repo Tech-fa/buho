@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Terminal</title>
+    <link rel="stylesheet" href="/src/terminal.css" />
+    <script type="module" src="/src/terminal.ts" defer></script>
+  </head>
+  <body>
+    <div id="panel">
+      <div
+        id="pull"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Pull up the terminal"
+        aria-valuemin="36"
+        aria-valuenow="36"
+        tabindex="0"
+      >
+        <span class="grip" aria-hidden="true"></span>
+        <span id="pull-label">Pull up the terminal</span>
+      </div>
+      <p id="status" hidden>Starting the terminal…</p>
+      <div id="term" hidden></div>
+    </div>
+  </body>
+</html>

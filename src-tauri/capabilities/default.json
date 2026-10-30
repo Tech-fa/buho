@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the setup window and the terminal inside the preview. The previewed page is not listed, so that page cannot call shell commands.",
+  "windows": ["main"],
+  "webviews": ["terminal"],
+  "permissions": [
+    "core:default",
+    "dialog:default"
+  ]
+}

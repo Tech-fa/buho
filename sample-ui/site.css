@@ -1,0 +1,49 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, "Segoe UI", sans-serif;
+  background: #f3f0e8;
+  color: #1c1915;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    background: #1c1915;
+    color: #f3f0e8;
+  }
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  width: min(36rem, calc(100% - 2rem));
+  margin: 2rem auto;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 1.75rem;
+}
+
+pre {
+  padding: 0.75rem;
+  overflow: auto;
+  border: 1px solid #d9d1c3;
+  border-radius: 6px;
+  background: #fffdf8;
+}
+
+@media (prefers-color-scheme: dark) {
+  pre {
+    border-color: #3a342c;
+    background: #262119;
+  }
+}

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Buho</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <main class="setup">
+      <header>
+        <p class="eyebrow">Setup</p>
+        <h1 id="app-name">Loading</h1>
+        <p id="summary"></p>
+      </header>
+
+      <section class="panel resource">
+        <div class="resource-head">
+          <h2>DigitalOcean key</h2>
+          <p id="token-state" class="hint"></p>
+        </div>
+        <div class="actions">
+          <button id="edit-token" type="button">Change</button>
+          <button id="remove-token" type="button">Remove</button>
+        </div>
+        <div id="token-editor" hidden>
+          <p>DigitalOcean is the company that will run your app. You need a key from them so we can set it up for you.</p>
+          <p>On their website, create a key and choose <strong>Full Access</strong>. The picture shows the right choice. Copy the key and paste it below. We keep it on this computer only.</p>
+          <figure class="guide">
+            <img src="/digitalocean-full-access.jpg" alt="DigitalOcean create key screen with Full Access selected" />
+          </figure>
+          <p><button id="create-token" type="button">Open DigitalOcean and create a key</button></p>
+          <label for="do-token">Paste the key</label>
+          <input id="do-token" type="password" spellcheck="false" autocomplete="off" />
+          <div class="actions">
+            <button id="save-token" class="primary" type="button">Save this key</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel resource">
+        <div class="resource-head">
+          <h2>Email key</h2>
+          <p id="resend-state" class="hint"></p>
+        </div>
+        <div class="actions">
+          <button id="edit-resend" type="button">Change</button>
+          <button id="remove-resend" type="button">Remove</button>
+        </div>
+        <div id="resend-editor" hidden>
+          <p>The app sends email through a service called Resend. Create a key on their website, paste it below, and save it. We keep it with the rest of your setup on this computer.</p>
+          <p><button id="create-resend" type="button">Open Resend and create a key</button></p>
+          <label for="resend-key">Paste the email key</label>
+          <input id="resend-key" type="password" spellcheck="false" autocomplete="off" />
+          <div class="actions">
+            <button id="save-resend" class="primary" type="button">Save this email key</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel resource">
+        <div class="resource-head">
+          <h2>Sending address</h2>
+          <p id="from-email-state" class="hint"></p>
+        </div>
+        <div class="actions">
+          <button id="edit-from-email" type="button">Change</button>
+        </div>
+        <div id="from-email-editor" hidden>
+          <p>When the app sends an email, this is the address people see it came from. It starts as notifications@resend.dev. Change it only if Resend is allowed to send from another address.</p>
+          <p id="from-email-followup" class="hint"></p>
+          <label for="from-email">Email address</label>
+          <input id="from-email" type="email" autocomplete="email" spellcheck="false" placeholder="notifications@resend.dev" />
+          <div class="actions">
+            <button id="save-from-email" class="primary" type="button">Save this address</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel resource">
+        <div class="resource-head">
+          <h2>Sign-in email</h2>
+          <p id="admin-email-state" class="hint"></p>
+        </div>
+        <div class="actions">
+          <button id="edit-admin-email" type="button">Change</button>
+        </div>
+        <div id="admin-email-editor" hidden>
+          <p>This is the email address you will use to sign in and manage the app. Use an address you can open.</p>
+          <p id="admin-email-followup" class="hint"></p>
+          <label for="admin-email">Email address</label>
+          <input id="admin-email" type="email" autocomplete="email" spellcheck="false" placeholder="you@company.com" />
+          <div class="actions">
+            <button id="save-admin-email" class="primary" type="button">Save this email</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel resource">
+        <div class="resource-head">
+          <h2>Where your app runs</h2>
+          <p id="droplet-state" class="hint"></p>
+        </div>
+        <p id="release-note" class="hint"></p>
+        <div class="actions" id="droplet-actions" hidden>
+          <button id="redeploy" class="primary" type="button">Update my app</button>
+          <button id="delete-droplet" type="button">Remove this computer</button>
+        </div>
+        <div id="region-step">
+          <p>Choose a place close to your team. If most people are in one city, choose that city. A closer place usually makes the app feel faster.</p>
+          <p id="region-warning" class="callout warning" hidden></p>
+          <label for="region">Place</label>
+          <select id="region"></select>
+          <p class="hint">This list only shows places DigitalOcean can use right now. If the place you want is missing, it is not available. Choose another place from the list.</p>
+          <div class="actions">
+            <button id="deploy" class="primary" type="button">Create my app</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="finished" hidden>
+        <h2>Your app is ready</h2>
+        <p id="finished-detail"></p>
+        <p>Save a copy of your setup in a private place, such as a folder only you use. The copy includes your keys and the sign-in password. Do not email the file, and do not put it in a shared folder.</p>
+        <div class="actions">
+          <button id="open-running-app-finished" class="primary" type="button">App is running</button>
+          <button id="download-config" type="button">Save a copy of my setup</button>
+        </div>
+        <p id="download-note" class="hint"></p>
+      </section>
+
+      <p id="deploy-status" class="hint"></p>
+      <p id="deploy-error" class="error" role="alert"></p>
+
+      <section class="panel" id="page-panel">
+        <h2>Open a page</h2>
+        <p>Open your app, or any other address. It opens in its own window. Pull the terminal up from the bottom of that window to work with the app.</p>
+        <div class="actions" id="running-actions" hidden>
+          <button id="open-running-app" class="primary" type="button">App is running</button>
+        </div>
+        <form id="page-form">
+          <label for="page-url">Page address</label>
+          <div class="path-row">
+            <input id="page-url" type="url" spellcheck="false" autocomplete="off" placeholder="https://example.com" aria-describedby="page-error" />
+            <button class="primary" type="submit">Open</button>
+          </div>
+        </form>
+        <p id="page-error" class="error" role="alert"></p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sample</title>
+    <link rel="stylesheet" href="/site.css" />
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Served app</p>
+      <h1 id="title">Loading settings…</h1>
+      <p>This page is the web app. Buho wrote the settings below into <code>/config.json</code>.</p>
+      <pre id="config"></pre>
+    </main>
+    <script>
+      fetch("/config.json", { cache: "no-store" })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(String(response.status));
+          }
+          return response.json();
+        })
+        .then((config) => {
+          document.getElementById("title").textContent = config.siteTitle || "Sample";
+          document.getElementById("config").textContent = JSON.stringify(config, null, 2);
+        })
+        .catch(() => {
+          document.getElementById("title").textContent = "No config.json yet";
+          document.getElementById("config").textContent =
+            "Save the settings in Buho, then open this page again.";
+        });
+    </script>
+  </body>
+</html>

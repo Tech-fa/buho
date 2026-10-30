@@ -1,0 +1,23 @@
+{
+  "id": "sample",
+  "name": "Sample",
+  "configFile": "config.json",
+  "spa": true,
+  "fields": [
+    {
+      "key": "siteTitle",
+      "label": "Site title",
+      "description": "Shown on the sample page. A real app lists its own settings here.",
+      "type": "string",
+      "required": true,
+      "default": "Local sample"
+    },
+    {
+      "key": "note",
+      "label": "Note",
+      "description": "Optional text stored in config.json.",
+      "type": "text",
+      "required": false
+    }
+  ]
+}
