@@ -681,6 +681,18 @@ mod tests {
     }
 
     #[test]
+    fn the_bridge_attaches_the_page_only_after_control_exists() {
+        let script = bridge_script();
+        let assigned = script
+            .find("window.__appControl = {")
+            .expect("bridge installs page control");
+        let bound = script
+            .find("window.__bindAgentPageLinks")
+            .expect("bridge notifies the page");
+        assert!(assigned < bound);
+    }
+
+    #[test]
     fn the_catalog_posts_navigation_and_form_tools() {
         let catalog = tool_definitions();
         let names: Vec<&str> = catalog

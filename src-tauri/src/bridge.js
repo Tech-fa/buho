@@ -264,6 +264,10 @@ window.__installAppControl = function installAppControl() {
       return await builtin(args || {});
     },
   };
+
+  if (typeof window.__bindAgentPageLinks === "function") {
+    window.__bindAgentPageLinks();
+  }
 };
 
 window.__installAppControl();

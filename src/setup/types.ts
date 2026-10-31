@@ -50,6 +50,10 @@ export type Deployment = {
   appUrl: string;
   apiVersion: string;
   uiVersion: string;
+  domain: string;
+  appHost: string;
+  apiHost: string;
+  httpsReady: boolean;
 };
 
 export type ReleaseVersions = {

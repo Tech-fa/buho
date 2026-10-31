@@ -65,9 +65,20 @@ The file mode is `0600`, so only your user can read it. An empty paste does not 
 
 `deploy.sh` installs Docker if the machine does not have it, writes the dashboard `config.json` so the UI calls `http://<ip>:3012`, and starts Compose.
 
-`desktop-shell/deploy/docker-compose.yml` starts MySQL, Redis, RabbitMQ, the API, and the dashboard. The API image is `api.Dockerfile`. The dashboard image is `ui.Dockerfile`, served by nginx.
+`desktop-shell/deploy/docker-compose.yml` starts MySQL, Redis, RabbitMQ, the API, and the dashboard. It pulls `techfa22/fourss-api` and `techfa22/fourss-ui`. Those images are built from `deploy/` in the fourss repo. The dashboard image is served by nginx.
 
 A second click on Deploy uses the saved droplet and key. It does not create another machine.
+
+## Your own domain
+
+This step waits until the droplet already has an IP. The user types the domain they own, such as `example.com`. The shell shows two names and does nothing on the droplet yet:
+
+- `4ss-app.example.com`
+- `4ss-app-api.example.com`
+
+Both are A records aimed at the droplet IP. After the user says those records are in place, the shell checks that they resolve to that IP, then uploads `deploy/https.sh`. The script moves the app containers onto localhost, installs nginx and certbot, and requests one certificate for both names. Nginx sends `4ss-app` to the dashboard and `4ss-app-api` to the API, and port 80 for those names redirects to HTTPS. The dashboard config then uses `https://4ss-app-api.<domain>`.
+
+Until that confirmation, the app stays on `http://<ip>` and port 3012, the same as before. An update of an app that already has the certificate runs the same domain script again so the update does not put it back on plain HTTP.
 
 ## The other Rust files
 
@@ -85,3 +96,4 @@ A second click on Deploy uses the saved droplet and key. It does not create anot
 - The first SSH connection trusts the host key it sees (`accept-new`), then pins it in the shell's own `known_hosts` file.
 - The agent server can click through the app you have open. Anything that learns the token from the agent terminal can do that too. A random website on the internet cannot, because it does not have the token and the port is not public.
 - The shell window has no content-security policy, because the same window later loads the deployed app.
+- Until a domain is confirmed, the dashboard and the API are still plain HTTP on the droplet IP.

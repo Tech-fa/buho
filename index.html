@@ -129,6 +129,43 @@
           <button id="download-config" type="button">Save a copy of my setup</button>
         </div>
         <p id="download-note" class="hint"></p>
+        <h2>Use your own domain</h2>
+        <p>This part is optional. Type the domain you bought, such as example.com, then choose Add domain.</p>
+        <label for="domain">Domain you own</label>
+        <input id="domain" type="text" spellcheck="false" autocomplete="off" placeholder="example.com" />
+        <div class="actions">
+          <button id="save-domain" class="primary" type="button">Add domain</button>
+        </div>
+        <div id="domain-instructions" hidden>
+          <p id="domain-where"></p>
+          <table class="dns">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Name</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>A</td>
+                <td id="dns-app-name">4ss-app</td>
+                <td id="app-value"></td>
+              </tr>
+              <tr>
+                <td>A</td>
+                <td id="dns-api-name">4ss-app-api</td>
+                <td id="api-value"></td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="hint" id="domain-name-hint"></p>
+          <p>Wait until those names reach this computer. That can take a few minutes, and sometimes longer. Then tell us the rows are in place.</p>
+          <p id="https-state" class="hint"></p>
+          <div class="actions">
+            <button id="enable-https" class="primary" type="button">The rows are in place</button>
+          </div>
+        </div>
       </section>
 
       <p id="deploy-status" class="hint"></p>

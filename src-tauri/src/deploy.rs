@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -20,6 +20,7 @@ const API_IMAGE: &str = "techfa22/fourss-api";
 const UI_IMAGE: &str = "techfa22/fourss-ui";
 const COMPOSE_FILE: &str = include_str!("../../deploy/docker-compose.yml");
 const DEPLOY_SCRIPT: &str = include_str!("../../deploy/deploy.sh");
+const HTTPS_SCRIPT: &str = include_str!("../../deploy/https.sh");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +61,10 @@ pub struct DeploymentConfig {
     pub api_version: String,
     #[serde(default)]
     pub ui_version: String,
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub https_ready: bool,
 }
 
 fn default_region() -> String {
@@ -87,6 +92,8 @@ impl Default for DeploymentConfig {
             secret_key: String::new(),
             api_version: String::new(),
             ui_version: String::new(),
+            domain: String::new(),
+            https_ready: false,
         }
     }
 }
@@ -120,6 +127,10 @@ pub struct DeploymentView {
     pub app_url: String,
     pub api_version: String,
     pub ui_version: String,
+    pub domain: String,
+    pub app_host: String,
+    pub api_host: String,
+    pub https_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -201,6 +212,7 @@ pub fn delete_droplet(data_dir: &Path) -> Result<DeploymentConfig, String> {
     }
     config.droplet_id = 0;
     config.public_ip.clear();
+    config.https_ready = false;
     write_config(&config_path(data_dir), &config)?;
     Ok(config)
 }
@@ -272,8 +284,45 @@ pub fn list_regions(token: &str) -> Result<Vec<RegionChoice>, String> {
     Ok(listed)
 }
 
+pub fn save_domain(data_dir: &Path, domain: &str) -> Result<DeploymentConfig, String> {
+    let domain = normalize_domain(domain)?;
+    let mut config = ensure_config(data_dir)?;
+    if config.public_ip.is_empty() {
+        return Err("Finish making your app before you add a domain.".into());
+    }
+    if config.domain != domain {
+        config.https_ready = false;
+    }
+    config.domain = domain;
+    write_config(&config_path(data_dir), &config)?;
+    Ok(config)
+}
+
+pub fn install_https(
+    data_dir: &Path,
+    report: &mut dyn FnMut(String),
+) -> Result<DeploymentConfig, String> {
+    let mut config = ensure_config(data_dir)?;
+    require_https_target(&config)?;
+    report("Checking that your domain names point at the computer.".into());
+    ensure_dns(&config)?;
+    report("Securing your domain. This can take a while. Leave this window open.".into());
+    let key_path = write_private_key(data_dir, &config.ssh_private_key)?;
+    let known_hosts = data_dir.join("known_hosts");
+    apply_https(&config, data_dir, &key_path, &known_hosts)?;
+    config.https_ready = true;
+    write_config(&config_path(data_dir), &config)?;
+    report("Your app is ready.".into());
+    Ok(config)
+}
+
 pub fn view(config: DeploymentConfig, status: &str, running: bool) -> DeploymentView {
-    let app_url = if config.public_ip.is_empty() {
+    let domain = normalize_domain(&config.domain).unwrap_or_default();
+    let app_host = app_host(&domain);
+    let api_host = api_host(&domain);
+    let app_url = if config.https_ready && !app_host.is_empty() {
+        format!("https://{app_host}")
+    } else if config.public_ip.is_empty() {
         String::new()
     } else {
         format!("http://{}", config.public_ip)
@@ -298,6 +347,10 @@ pub fn view(config: DeploymentConfig, status: &str, running: bool) -> Deployment
         app_url,
         api_version: config.api_version,
         ui_version: config.ui_version,
+        domain,
+        app_host,
+        api_host,
+        https_ready: config.https_ready,
     }
 }
 
@@ -433,6 +486,16 @@ pub fn provision(
             shell_quote(&config.public_ip)
         ),
     )?;
+    if config.https_ready {
+        report("Checking that your domain names still point at the computer.".into());
+        if let Err(err) = ensure_dns(&config)
+            .and_then(|_| apply_https(&config, data_dir, &key_path, &known_hosts))
+        {
+            config.https_ready = false;
+            write_config(&config_path(data_dir), &config)?;
+            return Err(err);
+        }
+    }
     report("Your app is ready.".into());
     Ok(config)
 }
@@ -865,6 +928,152 @@ fn random_token(len: usize) -> String {
         .collect()
 }
 
+fn require_https_target(config: &DeploymentConfig) -> Result<(), String> {
+    if config.public_ip.is_empty() || config.droplet_id == 0 || config.ssh_private_key.is_empty() {
+        return Err("Finish making your app before you add a domain.".into());
+    }
+    normalize_domain(&config.domain)?;
+    if !acceptable_email(&config.admin_email) {
+        return Err("Save the email address you use to sign in before you add a domain.".into());
+    }
+    Ok(())
+}
+
+fn ensure_dns(config: &DeploymentConfig) -> Result<(), String> {
+    let domain = normalize_domain(&config.domain)?;
+    let app = app_host(&domain);
+    let api = api_host(&domain);
+    if host_points_at(&app, &config.public_ip) && host_points_at(&api, &config.public_ip) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{app} and {api} do not both point at {} yet. Wait a few minutes, then try again.",
+            config.public_ip
+        ))
+    }
+}
+
+fn host_points_at(host: &str, ip: &str) -> bool {
+    let Ok(expected) = ip.parse::<IpAddr>() else {
+        return false;
+    };
+    match (host, 443).to_socket_addrs() {
+        Ok(addrs) => addrs.map(|addr| addr.ip()).any(|found| found == expected),
+        Err(_) => false,
+    }
+}
+
+fn apply_https(
+    config: &DeploymentConfig,
+    data_dir: &Path,
+    key: &Path,
+    known_hosts: &Path,
+) -> Result<(), String> {
+    let domain = normalize_domain(&config.domain)?;
+    upload_https_script(data_dir, key, known_hosts, &config.public_ip)?;
+    ssh_run(
+        key,
+        known_hosts,
+        &config.public_ip,
+        &format!(
+            "APP_HOST={} API_HOST={} PUBLIC_IP={} ADMIN_EMAIL={} bash /opt/fourss/desktop-shell/deploy/https.sh",
+            shell_quote(&app_host(&domain)),
+            shell_quote(&api_host(&domain)),
+            shell_quote(&config.public_ip),
+            shell_quote(&config.admin_email),
+        ),
+    )
+    .map_err(|err| format!("https-setup: {err}"))
+}
+
+fn upload_https_script(
+    data_dir: &Path,
+    key: &Path,
+    known_hosts: &Path,
+    ip: &str,
+) -> Result<(), String> {
+    ssh_run(
+        key,
+        known_hosts,
+        ip,
+        "mkdir -p /opt/fourss/desktop-shell/deploy",
+    )
+    .map_err(|err| format!("https-setup: {err}"))?;
+    let script_path = data_dir.join("https.sh");
+    fs::write(&script_path, HTTPS_SCRIPT).map_err(|err| err.to_string())?;
+    let destination = format!(
+        "{}:/opt/fourss/desktop-shell/deploy/https.sh",
+        ssh_destination(ip)?
+    );
+    let status = scp_command(key, known_hosts)
+        .arg(&script_path)
+        .arg(&destination)
+        .status()
+        .map_err(|err| format!("scp failed to start: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("https-setup: Could not upload the domain setup.".into())
+    }
+}
+
+pub fn normalize_domain(value: &str) -> Result<String, String> {
+    let domain = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    if domain.is_empty()
+        || domain.len() > 253
+        || domain.parse::<IpAddr>().is_ok()
+        || !domain_labels_ok(&domain)
+    {
+        return Err("Type the domain you own, such as example.com.".into());
+    }
+    if domain.starts_with("4ss-app.") || domain.starts_with("4ss-app-api.") {
+        return Err(
+            "Type the domain you own, such as example.com. We add 4ss-app. in front of it.".into(),
+        );
+    }
+    Ok(domain)
+}
+
+fn domain_labels_ok(domain: &str) -> bool {
+    let labels: Vec<&str> = domain.split('.').collect();
+    if labels.len() < 2 {
+        return false;
+    }
+    let ending = labels.last().copied().unwrap_or("");
+    if ending.len() < 2
+        || !ending
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+    {
+        return false;
+    }
+    labels.iter().all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    })
+}
+
+pub fn app_host(domain: &str) -> String {
+    if domain.is_empty() {
+        String::new()
+    } else {
+        format!("4ss-app.{domain}")
+    }
+}
+
+pub fn api_host(domain: &str) -> String {
+    if domain.is_empty() {
+        String::new()
+    } else {
+        format!("4ss-app-api.{domain}")
+    }
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -908,6 +1117,12 @@ fn region_is_offered(region: &Value) -> bool {
 
 pub fn plain_failure(message: &str) -> String {
     let lower = message.to_lowercase();
+    if lower.contains("point at") {
+        return message.to_string();
+    }
+    if lower.contains("https-setup") {
+        return "We could not secure the domain. Check that both names point at this computer, then try again.".into();
+    }
     let place_unavailable = lower.contains("invalid region")
         || ((lower.contains("region") || lower.contains("size"))
             && (lower.contains("not available") || lower.contains("unavailable")));
@@ -1238,6 +1453,57 @@ mod tests {
         assert!(compose.contains("techfa22/fourss-ui:1.0.0"));
         assert!(!compose.contains("techfa22/fourss-api:latest"));
         assert!(!compose.contains("techfa22/fourss-ui:latest"));
+    }
+
+    #[test]
+    fn a_domain_is_saved_until_the_records_are_secured() {
+        let dir = std::env::temp_dir().join(format!("shell-deploy-domain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut config = ensure_config(&dir).unwrap();
+        config.public_ip = "203.0.113.10".into();
+        config.https_ready = true;
+        write_config(&config_path(&dir), &config).unwrap();
+        assert!(save_domain(&dir, "example").is_err());
+        assert!(save_domain(&dir, "4ss-app.example.com").is_err());
+        let saved = save_domain(&dir, "Example.COM.").unwrap();
+        assert_eq!(saved.domain, "example.com");
+        assert!(!saved.https_ready);
+        assert_eq!(app_host(&saved.domain), "4ss-app.example.com");
+        assert_eq!(api_host(&saved.domain), "4ss-app-api.example.com");
+        assert_eq!(view(saved, "", false).app_url, "http://203.0.113.10");
+        let mut ready = ensure_config(&dir).unwrap();
+        ready.https_ready = true;
+        write_config(&config_path(&dir), &ready).unwrap();
+        let kept = save_domain(&dir, "example.com").unwrap();
+        assert!(kept.https_ready);
+        assert_eq!(view(kept, "", false).app_url, "https://4ss-app.example.com");
+        let changed = save_domain(&dir, "other.example").unwrap();
+        assert!(!changed.https_ready);
+        let removed = delete_droplet(&dir).unwrap();
+        assert!(removed.public_ip.is_empty());
+        assert!(!removed.https_ready);
+        assert_eq!(removed.domain, "other.example");
+        let message = plain_failure("https-setup: Remote command failed: certbot failed");
+        assert!(message.contains("could not secure the domain"));
+        assert!(!message.contains("certbot"));
+        let waiting = plain_failure(
+            "4ss-app.example.com and 4ss-app-api.example.com do not both point at 203.0.113.10 yet.",
+        );
+        assert!(waiting.contains("point at"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_setup_file_still_opens() {
+        let dir = std::env::temp_dir().join(format!("shell-deploy-old-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(config_path(&dir), "{\"region\":\"sfo3\"}").unwrap();
+        let config = ensure_config(&dir).unwrap();
+        assert_eq!(config.region, "sfo3");
+        assert!(config.domain.is_empty());
+        assert!(!config.https_ready);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

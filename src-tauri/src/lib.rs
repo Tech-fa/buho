@@ -344,6 +344,12 @@ fn save_deployment(
 }
 
 #[tauri::command]
+fn save_domain(shell: tauri::State<Shell>, domain: String) -> Result<DeploymentView, String> {
+    journal::logged_plain("save domain", deploy::save_domain(&shell.data_dir, &domain))?;
+    journal::logged("read setup", shell.deployment_view())
+}
+
+#[tauri::command]
 fn check_token(token: String) -> Result<(), String> {
     journal::logged_plain("DigitalOcean key", deploy::verify_token(&token))
 }
@@ -450,6 +456,52 @@ fn start_deploy(app: AppHandle, shell: tauri::State<Shell>) -> Result<Deployment
             Ok(_) => "Your app is ready.".into(),
             Err(err) => {
                 journal::write("make the app", &err);
+                deploy::plain_failure(&err)
+            }
+        };
+        running.store(false, Ordering::SeqCst);
+    });
+    journal::logged("read setup", shell.deployment_view())
+}
+
+#[tauri::command]
+fn start_https(app: AppHandle, shell: tauri::State<Shell>) -> Result<DeploymentView, String> {
+    if shell
+        .deploy_running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return journal::logged(
+            "secure the domain",
+            Err("We are already working on your app.".into()),
+        );
+    }
+    let data_dir = shell.data_dir.clone();
+    let status = Arc::clone(&shell.deploy_status);
+    let running = Arc::clone(&shell.deploy_running);
+    {
+        let mut slot = status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.clear();
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let mut report = |message: String| {
+            let mut slot = status
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = message;
+            let _ = handle.emit("deploy-status", slot.clone());
+        };
+        let outcome = deploy::install_https(&data_dir, &mut report);
+        let mut slot = status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = match outcome {
+            Ok(_) => "Your app is ready.".into(),
+            Err(err) => {
+                journal::write("secure the domain", &err);
                 deploy::plain_failure(&err)
             }
         };
@@ -602,6 +654,8 @@ pub fn run() {
             deployment_state,
             available_versions,
             save_deployment,
+            save_domain,
+            start_https,
             check_token,
             droplet_regions,
             open_external,

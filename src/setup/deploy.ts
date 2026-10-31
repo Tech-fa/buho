@@ -51,6 +51,17 @@ const runningActions = document.querySelector("#running-actions") as HTMLDivElem
 const pageForm = document.querySelector("#page-form") as HTMLFormElement;
 const pageUrl = document.querySelector("#page-url") as HTMLInputElement;
 const pageError = document.querySelector("#page-error") as HTMLParagraphElement;
+const domainInput = document.querySelector("#domain") as HTMLInputElement;
+const domainInstructions = document.querySelector("#domain-instructions") as HTMLDivElement;
+const domainWhere = document.querySelector("#domain-where") as HTMLParagraphElement;
+const appNameCell = document.querySelector("#dns-app-name") as HTMLTableCellElement;
+const apiNameCell = document.querySelector("#dns-api-name") as HTMLTableCellElement;
+const appValueCell = document.querySelector("#app-value") as HTMLTableCellElement;
+const apiValueCell = document.querySelector("#api-value") as HTMLTableCellElement;
+const domainNameHint = document.querySelector("#domain-name-hint") as HTMLParagraphElement;
+const httpsState = document.querySelector("#https-state") as HTMLParagraphElement;
+const saveDomainButton = document.querySelector("#save-domain") as HTMLButtonElement;
+const enableHttpsButton = document.querySelector("#enable-https") as HTMLButtonElement;
 
 let deployment: Deployment | null = null;
 let tokenEditorOpen = false;
@@ -64,6 +75,7 @@ let releaseError = "";
 let releaseLoaded = false;
 let sawRunning = false;
 let shownAppUrl = "";
+let shownDomain = "";
 
 function plainMessage(message: string): string {
   const text = message.replace(/^Error:\s*/i, "");
@@ -81,10 +93,28 @@ function plainMessage(message: string): string {
   if (lower.includes("not authorized") || lower.includes("returned 403")) {
     return "DigitalOcean did not accept this key. Create a new key and choose Full Access, as in the picture.";
   }
+  if (lower.includes("point at")) {
+    return text;
+  }
   if (lower.includes("remote command failed") || lower.includes("failed to solve") || text.length > 240) {
     return "We could not finish making your app. Wait a moment, then try again.";
   }
   return text;
+}
+
+function showDomainRecords(saved: string, typed: string, ip: string): void {
+  const current = typed.trim().toLowerCase().replace(/\.+$/, "");
+  const show = saved.length > 0 && current === saved && ip.length > 0;
+  domainInstructions.hidden = !show;
+  if (!show) {
+    return;
+  }
+  domainWhere.textContent = `Open the website where you bought ${saved}. Find DNS, or the place where records are listed, and add these two rows.`;
+  appNameCell.textContent = "4ss-app";
+  apiNameCell.textContent = "4ss-app-api";
+  appValueCell.textContent = ip;
+  apiValueCell.textContent = ip;
+  domainNameHint.textContent = `In the Name box, type only what the table shows. The website already adds .${saved}. The Value box is the address.`;
 }
 
 function askForAnotherPlace(rejected?: string): void {
@@ -169,11 +199,24 @@ function renderDeployment(next: Deployment): void {
   saveFromEmail.disabled = busy || actionLocked;
   editAdminEmail.disabled = busy || actionLocked;
   saveAdminEmail.disabled = busy || actionLocked;
+  const domainName = next.domain ?? "";
+  const httpsReady = next.httpsReady === true;
+  if (document.activeElement !== domainInput && (domainInput.value === "" || domainInput.value === shownDomain)) {
+    domainInput.value = domainName;
+    shownDomain = domainName;
+  }
+  showDomainRecords(domainName, domainInput.value, next.publicIp);
+  httpsState.textContent = httpsReady
+    ? `People can open https://${next.appHost}. The app calls https://${next.apiHost}.`
+    : "";
+  enableHttpsButton.textContent = httpsReady ? "Secure the address again" : "The rows are in place";
+  saveDomainButton.disabled = next.running || actionLocked;
+  enableHttpsButton.disabled = next.running || actionLocked;
   if (next.running) {
-    deployStatus.textContent = WORKING;
+    deployStatus.textContent = next.status || WORKING;
     deployError.textContent = "";
     shownStatus = next.status;
-  } else if (ready) {
+  } else if (ready && (next.status === "" || next.status === READY)) {
     deployStatus.textContent = "";
     deployError.textContent = "";
     shownStatus = next.status;
@@ -565,6 +608,44 @@ export function mountDeploy(): void {
       renderDeployment(await invoke<Deployment>("start_deploy"));
     } catch (error) {
       logError("update the app", error);
+      deployError.textContent = plainMessage(String(error));
+    }
+  });
+
+  domainInput.addEventListener("input", () => {
+    showDomainRecords(deployment?.domain ?? "", domainInput.value, deployment?.publicIp ?? "");
+  });
+
+  saveDomainButton.addEventListener("click", async () => {
+    deployError.textContent = "";
+    const domain = domainInput.value.trim();
+    if (!domain) {
+      deployError.textContent = "Type the domain you own, such as example.com.";
+      return;
+    }
+    try {
+      const next = await invoke<Deployment>("save_domain", { domain });
+      shownDomain = next.domain;
+      domainInput.value = next.domain;
+      renderDeployment(next);
+      deployStatus.textContent = "";
+    } catch (error) {
+      logError("domain", error);
+      deployError.textContent = plainMessage(String(error));
+    }
+  });
+
+  enableHttpsButton.addEventListener("click", async () => {
+    deployError.textContent = "";
+    const typed = domainInput.value.trim().toLowerCase().replace(/\.+$/, "");
+    if (typed !== deployment?.domain) {
+      deployError.textContent = "Choose Add domain first. The rows have to match the domain you added.";
+      return;
+    }
+    try {
+      renderDeployment(await invoke<Deployment>("start_https"));
+    } catch (error) {
+      logError("secure the domain", error);
       deployError.textContent = plainMessage(String(error));
     }
   });

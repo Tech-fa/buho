@@ -1,0 +1,124 @@
+name: Publish desktop app
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+      - run: npm run tauri build
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p upload
+          find src-tauri/target/release/bundle -type f \
+            \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' \) \
+            -exec cp {} upload/ \;
+          find upload -type f -print
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.platform }}
+          path: upload/*
+          if-no-files-found: error
+
+  publish:
+    name: Upload to S3
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          path: dist-bundles
+          merge-multiple: true
+
+      - name: Resolve the release
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            notes="$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")"
+          else
+            version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+            notes="$(git log -1 --format=%B)"
+          fi
+          notes="${notes:-Buho ${version}}"
+          base="${{ secrets.S3_PUBLIC_BASE_URL }}"
+          base="${base:-https://${{ secrets.S3_BUCKET }}.s3.${{ secrets.AWS_REGION }}.amazonaws.com}"
+          {
+            echo "version=${version}"
+            echo "published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "base=${base}"
+            echo "notes<<NOTES"
+            echo "${notes}"
+            echo "NOTES"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write latest.json
+        env:
+          NOTES: ${{ steps.release.outputs.notes }}
+        run: |
+          node .github/scripts/publish-release.mjs \
+            dist-bundles \
+            "${{ steps.release.outputs.version }}" \
+            "$NOTES" \
+            "${{ steps.release.outputs.published_at }}" \
+            "${{ steps.release.outputs.base }}" \
+            "releases"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Upload installers and latest.json
+        env:
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          test -n "$S3_BUCKET" || { echo "Set the S3_BUCKET secret."; exit 1; }
+          aws s3 cp dist-bundles/ "s3://${S3_BUCKET}/releases/${VERSION}/" \
+            --recursive \
+            --exclude "latest.json" \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp dist-bundles/latest.json "s3://${S3_BUCKET}/releases/latest.json" \
+            --content-type "application/json" \
+            --cache-control "public, max-age=60"
