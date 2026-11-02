@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,27 @@ const UI_IMAGE: &str = "techfa22/fourss-ui";
 const COMPOSE_FILE: &str = include_str!("../../deploy/docker-compose.yml");
 const DEPLOY_SCRIPT: &str = include_str!("../../deploy/deploy.sh");
 const HTTPS_SCRIPT: &str = include_str!("../../deploy/https.sh");
+const BACKUP_SCRIPT: &str = r#"set -euo pipefail
+umask 077
+root=$(mktemp -d /tmp/buho-backup-work.XXXXXX)
+cleanup() { rm -rf "$root"; }
+trap cleanup EXIT
+cd /opt/fourss
+compose=(docker compose --env-file desktop-shell/deploy/.env -f desktop-shell/deploy/docker-compose.yml)
+"${compose[@]}" exec -T mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers --no-tablespaces --hex-blob --set-gtid-purged=OFF --default-character-set=utf8mb4 "$MYSQL_DATABASE"' > "$root/database.sql"
+test -s "$root/database.sql"
+mkdir -p "$root/storage"
+cid=$("${compose[@]}" ps -q api)
+cid=${cid%%$'\n'*}
+if [ -z "$cid" ]; then
+  echo "The app is not running." >&2
+  exit 1
+fi
+docker cp "$cid:/app/storage/." "$root/storage/"
+find "$root/storage" ! -type d ! -type f -exec rm -f {} +
+tar -C "$root" -cf __TAR__ database.sql storage
+chmod 600 __TAR__
+"#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -258,6 +279,66 @@ pub fn export_configuration(data_dir: &Path, destination: &Path) -> Result<(), S
     write_private_file(destination, &bytes)
 }
 
+pub fn download_backup(data_dir: &Path, destination: &Path) -> Result<(), String> {
+    if destination.as_os_str().is_empty() {
+        return Err("Choose where to save the download.".into());
+    }
+    if destination.is_dir() {
+        return Err("Choose a file name for the download.".into());
+    }
+    if destination == config_path(data_dir) {
+        return Err("Choose a different file for the download.".into());
+    }
+    let config = ensure_config(data_dir)?;
+    if config.public_ip.is_empty() || config.droplet_id == 0 || config.ssh_private_key.is_empty() {
+        return Err("Finish making your app before you download your database and files.".into());
+    }
+    require_ip(&config.public_ip)?;
+    let remote = backup_tar_path(&backup_token())?;
+    let command = backup_command(&remote)?;
+    let key_path = write_private_key(data_dir, &config.ssh_private_key)?;
+    let known_hosts = data_dir.join("known_hosts");
+    let local_tar = data_dir.join(remote.rsplit('/').next().unwrap_or("buho-backup.tar"));
+    if destination == local_tar {
+        return Err("Choose a different file for the download.".into());
+    }
+    let _remove_local = RemoveFile(local_tar.clone());
+    let fetched = fetch_backup(
+        &key_path,
+        &known_hosts,
+        &config.public_ip,
+        &remote,
+        &command,
+        &local_tar,
+        destination,
+    );
+    let _ = ssh_run(
+        &key_path,
+        &known_hosts,
+        &config.public_ip,
+        &format!("rm -f {}", shell_quote(&remote)),
+    );
+    fetched
+}
+
+pub fn shown_backup_error(err: String) -> String {
+    let lower = err.to_lowercase();
+    if lower.contains("the app is not running") {
+        return "The app is not running on that computer yet. Wait until it is ready, then try again."
+            .into();
+    }
+    if lower.contains("remote command failed")
+        || lower.contains("scp failed")
+        || lower.contains("ssh failed")
+        || lower.contains("could not download")
+        || err.len() > 240
+    {
+        return "We could not download your database and files. Wait a moment, then try again."
+            .into();
+    }
+    err
+}
+
 pub fn list_regions(token: &str) -> Result<Vec<RegionChoice>, String> {
     let body = do_request(token, "GET", "/regions?per_page=200", None)?;
     let regions = body
@@ -393,7 +474,7 @@ pub fn provision(
         config.secret_key = random_token(32);
     }
     if config.droplet_name.is_empty() {
-        config.droplet_name = "documents-backend".into();
+        config.droplet_name = "fourss-backend".into();
     }
     write_config(&config_path(data_dir), &config)?;
 
@@ -437,7 +518,7 @@ pub fn provision(
                 "size": config.size,
                 "image": "ubuntu-24-04-x64",
                 "ssh_keys": [key_id],
-                "tags": ["documents-backend"],
+                "tags": ["fourss-backend"],
             })),
         )?;
         config.droplet_id = created
@@ -849,8 +930,204 @@ fn ssh_base_args(key: &Path, known_hosts: &Path) -> Vec<String> {
         "-o".into(),
         "StrictHostKeyChecking=accept-new".into(),
         "-o".into(),
+        "ServerAliveInterval=30".into(),
+        "-o".into(),
+        "ServerAliveCountMax=20".into(),
+        "-o".into(),
         format!("UserKnownHostsFile={}", known_hosts.display()),
     ]
+}
+
+fn backup_token() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let mut token = format!("{millis:x}{:x}", std::process::id());
+    while token.len() < 8 {
+        token.push('0');
+    }
+    token.truncate(32);
+    token
+}
+
+fn backup_tar_path(token: &str) -> Result<String, String> {
+    if (8..=32).contains(&token.len())
+        && token
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
+        Ok(format!("/tmp/buho-backup-{token}.tar"))
+    } else {
+        Err("Could not name the download.".into())
+    }
+}
+
+fn backup_remote_script(remote_tar: &str) -> Result<String, String> {
+    let Some(token) = remote_tar
+        .strip_prefix("/tmp/buho-backup-")
+        .and_then(|rest| rest.strip_suffix(".tar"))
+    else {
+        return Err("Could not name the download.".into());
+    };
+    let remote_tar = backup_tar_path(token)?;
+    let quoted = shell_quote(&remote_tar);
+    Ok(BACKUP_SCRIPT.replace("__TAR__", &quoted))
+}
+
+fn backup_command(remote_tar: &str) -> Result<String, String> {
+    let script = backup_remote_script(remote_tar)?;
+    Ok(format!("bash -c {}", shell_quote(&script)))
+}
+
+fn fetch_backup(
+    key: &Path,
+    known_hosts: &Path,
+    ip: &str,
+    remote_tar: &str,
+    command: &str,
+    local_tar: &Path,
+    destination: &Path,
+) -> Result<(), String> {
+    ssh_run(key, known_hosts, ip, command)?;
+    let source = format!("{}:{remote_tar}", ssh_destination(ip)?);
+    let status = scp_command(key, known_hosts)
+        .arg(source)
+        .arg(local_tar)
+        .status()
+        .map_err(|err| format!("scp failed to start: {err}"))?;
+    if !status.success() {
+        return Err("Could not download the backup.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(local_tar, fs::Permissions::from_mode(0o600));
+    }
+    pack_backup(local_tar, destination)
+}
+
+fn pack_backup(bundle: &Path, destination: &Path) -> Result<(), String> {
+    let outcome = pack_backup_into(bundle, destination);
+    if outcome.is_err() {
+        let _ = fs::remove_file(destination);
+    }
+    outcome
+}
+
+fn pack_backup_into(bundle: &Path, destination: &Path) -> Result<(), String> {
+    let file = File::open(bundle).map_err(|err| format!("Could not read the backup: {err}"))?;
+    let mut archive = tar::Archive::new(file);
+    let mut zip_file = create_private_file(destination)?;
+    let mut zip = zip::ZipWriter::new(&mut zip_file);
+    let directory = backup_file_options(0o700).compression_method(zip::CompressionMethod::Stored);
+    zip.add_directory("storage/", directory)
+        .map_err(|err| format!("Could not save the download: {err}"))?;
+    let mut saw_database = false;
+    let entries = archive
+        .entries()
+        .map_err(|err| format!("Could not read the backup: {err}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|err| format!("Could not read the backup: {err}"))?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry
+            .path()
+            .map_err(|_| "The backup contained a file name we will not save.".to_string())?
+            .into_owned();
+        let Some(name) = backup_zip_name(&path)? else {
+            continue;
+        };
+        if name == "database.sql" {
+            if saw_database || entry.size() == 0 {
+                return Err("The backup did not include the database.".into());
+            }
+            saw_database = true;
+        }
+        zip.start_file(name, backup_file_options(0o600))
+            .map_err(|err| format!("Could not save the download: {err}"))?;
+        io::copy(&mut entry, &mut zip)
+            .map_err(|err| format!("Could not save the download: {err}"))?;
+    }
+    if !saw_database {
+        return Err("The backup did not include the database.".into());
+    }
+    zip.finish()
+        .map_err(|err| format!("Could not save the download: {err}"))?;
+    Ok(())
+}
+
+fn backup_file_options(mode: u32) -> zip::write::SimpleFileOptions {
+    zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(mode)
+}
+
+fn backup_zip_name(path: &Path) -> Result<Option<String>, String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => {
+                let text = part.to_str().ok_or_else(|| {
+                    "The backup contained a file name we will not save.".to_string()
+                })?;
+                if text.is_empty()
+                    || text == "."
+                    || text == ".."
+                    || text.len() > 200
+                    || text.contains(['/', '\\', '\0'])
+                    || text.chars().any(|character| character.is_control())
+                {
+                    return Err("The backup contained a file name we will not save.".into());
+                }
+                parts.push(text.to_string());
+            }
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err("The backup contained a file name we will not save.".into());
+            }
+        }
+    }
+    match parts.as_slice() {
+        [name] if name == "database.sql" => Ok(Some("database.sql".into())),
+        [folder, _, ..] if folder == "storage" => Ok(Some(parts.join("/"))),
+        _ => Ok(None),
+    }
+}
+
+struct RemoveFile(PathBuf);
+
+impl Drop for RemoveFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn create_private_file(path: &Path) -> Result<File, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|err| err.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|err| err.to_string())
+    }
 }
 
 fn do_request(token: &str, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
@@ -1520,5 +1797,126 @@ mod tests {
         assert!(copy.contains("sign-in-secret"));
         assert!(export_configuration(&dir, &config_path(&dir)).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_backup_waits_until_the_app_exists() {
+        let dir = std::env::temp_dir().join(format!("shell-deploy-backup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let destination = dir.join("backup.zip");
+        assert_eq!(
+            download_backup(&dir, Path::new("")).unwrap_err(),
+            "Choose where to save the download."
+        );
+        ensure_config(&dir).unwrap();
+        assert_eq!(
+            download_backup(&dir, &config_path(&dir)).unwrap_err(),
+            "Choose a different file for the download."
+        );
+        assert_eq!(
+            download_backup(&dir, &destination).unwrap_err(),
+            "Finish making your app before you download your database and files."
+        );
+        assert!(!destination.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_backup_command_keeps_the_database_password_on_the_server() {
+        let script = backup_remote_script("/tmp/buho-backup-abcDEF12.tar").unwrap();
+        assert!(script.contains("sh -c 'exec mysqldump -uroot -p\"$MYSQL_ROOT_PASSWORD\""));
+        assert!(script.contains("--single-transaction"));
+        assert!(script.contains("/app/storage/."));
+        assert!(script.contains("'/tmp/buho-backup-abcDEF12.tar'"));
+        assert!(!script.contains("DB_PASSWORD"));
+        let command = backup_command("/tmp/buho-backup-abcDEF12.tar").unwrap();
+        assert!(command.starts_with("bash -c '"));
+        assert!(command.contains("p\"$MYSQL_ROOT_PASSWORD\""));
+        assert!(!command.contains("DB_PASSWORD"));
+        assert!(backup_command("/tmp/buho-backup-abc.tar;rm").is_err());
+        assert!(backup_command("/etc/passwd").is_err());
+        assert_eq!(
+            shown_backup_error("Remote command failed: The app is not running.".into()),
+            "The app is not running on that computer yet. Wait until it is ready, then try again."
+        );
+        assert_eq!(
+            shown_backup_error("Remote command failed: mysqldump denied".into()),
+            "We could not download your database and files. Wait a moment, then try again."
+        );
+        assert_eq!(
+            shown_backup_error(
+                "Finish making your app before you download your database and files.".into(),
+            ),
+            "Finish making your app before you download your database and files."
+        );
+    }
+
+    #[test]
+    fn a_backup_zip_holds_the_database_and_storage_files() {
+        let dir = std::env::temp_dir().join(format!("shell-deploy-zip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let bundle = dir.join("bundle.tar");
+        let destination = dir.join("backup.zip");
+        write_sample_tar(
+            &bundle,
+            &[
+                ("database.sql", b"CREATE TABLE documents;\n"),
+                ("storage/notes.txt", b"hello"),
+                ("storage/nested/page.txt", b"page"),
+            ],
+        );
+        pack_backup(&bundle, &destination).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&destination).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let file = File::open(&destination).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut names: Vec<String> = zip.file_names().map(str::to_string).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "database.sql".to_string(),
+                "storage/".to_string(),
+                "storage/nested/page.txt".to_string(),
+                "storage/notes.txt".to_string(),
+            ]
+        );
+        let mut dump = String::new();
+        zip.by_name("database.sql")
+            .unwrap()
+            .read_to_string(&mut dump)
+            .unwrap();
+        assert_eq!(dump, "CREATE TABLE documents;\n");
+        let stored = zip.by_name("database.sql").unwrap().unix_mode().unwrap();
+        assert_eq!(stored & 0o777, 0o600);
+        assert_eq!(
+            backup_zip_name(Path::new("../secret.txt")).unwrap_err(),
+            "The backup contained a file name we will not save."
+        );
+        assert!(backup_zip_name(Path::new("storage/../../secret.txt")).is_err());
+        assert!(backup_zip_name(Path::new("/etc/passwd")).is_err());
+        assert_eq!(backup_zip_name(Path::new("other.txt")).unwrap(), None);
+
+        write_sample_tar(&bundle, &[("database.sql", b"")]);
+        assert!(pack_backup(&bundle, &destination).is_err());
+        assert!(!destination.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn write_sample_tar(path: &Path, files: &[(&str, &[u8])]) {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, bytes) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, *name, *bytes).unwrap();
+        }
+        fs::write(path, builder.into_inner().unwrap()).unwrap();
     }
 }

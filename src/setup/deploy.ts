@@ -28,6 +28,9 @@ const dropletActions = document.querySelector("#droplet-actions") as HTMLDivElem
 const finished = document.querySelector("#finished") as HTMLElement;
 const finishedDetail = document.querySelector("#finished-detail") as HTMLParagraphElement;
 const downloadNote = document.querySelector("#download-note") as HTMLParagraphElement;
+const backupNote = document.querySelector("#backup-note") as HTMLParagraphElement;
+const downloadBackup = document.querySelector("#download-backup") as HTMLButtonElement;
+const downloadConfig = document.querySelector("#download-config") as HTMLButtonElement;
 const doToken = document.querySelector("#do-token") as HTMLInputElement;
 const resendKey = document.querySelector("#resend-key") as HTMLInputElement;
 const fromEmail = document.querySelector("#from-email") as HTMLInputElement;
@@ -212,6 +215,8 @@ function renderDeployment(next: Deployment): void {
   enableHttpsButton.textContent = httpsReady ? "Secure the address again" : "The rows are in place";
   saveDomainButton.disabled = next.running || actionLocked;
   enableHttpsButton.disabled = next.running || actionLocked;
+  downloadBackup.disabled = busy || actionLocked;
+  downloadConfig.disabled = busy || actionLocked;
   if (next.running) {
     deployStatus.textContent = next.status || WORKING;
     deployError.textContent = "";
@@ -678,7 +683,7 @@ export function mountDeploy(): void {
     }
   });
 
-  document.querySelector("#download-config")?.addEventListener("click", async () => {
+  downloadConfig.addEventListener("click", async () => {
     downloadNote.textContent = "";
     deployError.textContent = "";
     const destination = await save({
@@ -695,6 +700,40 @@ export function mountDeploy(): void {
     } catch (error) {
       logError("save a copy", error);
       deployError.textContent = plainMessage(String(error));
+    }
+  });
+
+  downloadBackup.addEventListener("click", async () => {
+    backupNote.textContent = "";
+    deployError.textContent = "";
+    const destination = await save({
+      title: "Download your database and files",
+      defaultPath: "buho-backup.zip",
+      filters: [{ name: "Zip file", extensions: ["zip"] }],
+    });
+    if (!destination || !deployment || actionLocked) {
+      return;
+    }
+    actionLocked = true;
+    renderDeployment(deployment);
+    backupNote.textContent =
+      "Downloading your database and files. This can take a while. Leave this window open.";
+    let failure = "";
+    try {
+      await invoke("download_backup", { destination });
+      backupNote.textContent = "Saved. Keep that file somewhere private, and do not share it.";
+    } catch (error) {
+      logError("download data", error);
+      backupNote.textContent = "";
+      failure = plainMessage(String(error));
+    } finally {
+      actionLocked = false;
+      if (deployment) {
+        renderDeployment(deployment);
+      }
+    }
+    if (failure) {
+      deployError.textContent = failure;
     }
   });
 }

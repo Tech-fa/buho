@@ -35,6 +35,7 @@ struct Shell {
     mcp_token: Mutex<String>,
     deploy_status: Arc<Mutex<String>>,
     deploy_running: Arc<AtomicBool>,
+    backup_running: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -98,6 +99,7 @@ impl Shell {
             mcp_token: Mutex::new(String::new()),
             deploy_status: Arc::new(Mutex::new(String::new())),
             deploy_running: Arc::new(AtomicBool::new(false)),
+            backup_running: AtomicBool::new(false),
         })
     }
 
@@ -420,6 +422,12 @@ fn open_external(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn start_deploy(app: AppHandle, shell: tauri::State<Shell>) -> Result<DeploymentView, String> {
+    if shell.backup_running.load(Ordering::SeqCst) {
+        return journal::logged(
+            "make the app",
+            Err("Wait until the download finishes.".into()),
+        );
+    }
     if shell
         .deploy_running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -466,6 +474,12 @@ fn start_deploy(app: AppHandle, shell: tauri::State<Shell>) -> Result<Deployment
 
 #[tauri::command]
 fn start_https(app: AppHandle, shell: tauri::State<Shell>) -> Result<DeploymentView, String> {
+    if shell.backup_running.load(Ordering::SeqCst) {
+        return journal::logged(
+            "secure the domain",
+            Err("Wait until the download finishes.".into()),
+        );
+    }
     if shell
         .deploy_running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -542,6 +556,35 @@ fn export_configuration(shell: tauri::State<Shell>, destination: String) -> Resu
 }
 
 #[tauri::command]
+fn download_backup(shell: tauri::State<Shell>, destination: String) -> Result<(), String> {
+    if shell.deploy_running.load(Ordering::SeqCst) {
+        return journal::logged(
+            "download data",
+            Err("Wait until we finish making your app.".into()),
+        );
+    }
+    if shell
+        .backup_running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return journal::logged(
+            "download data",
+            Err("We are already downloading your database and files.".into()),
+        );
+    }
+    let _reset = ResetFlag(&shell.backup_running);
+    let outcome = deploy::download_backup(&shell.data_dir, Path::new(&destination));
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            journal::write("download data", &err);
+            Err(deploy::shown_backup_error(err))
+        }
+    }
+}
+
+#[tauri::command]
 fn forget_resource(shell: tauri::State<Shell>, kind: String) -> Result<DeploymentView, String> {
     journal::logged(
         "remove a saved item",
@@ -552,6 +595,12 @@ fn forget_resource(shell: tauri::State<Shell>, kind: String) -> Result<Deploymen
 
 #[tauri::command]
 fn delete_droplet(shell: tauri::State<Shell>) -> Result<DeploymentView, String> {
+    if shell.backup_running.load(Ordering::SeqCst) {
+        return journal::logged(
+            "remove the computer",
+            Err("Wait until the download finishes.".into()),
+        );
+    }
     if shell.deploy_running.load(Ordering::SeqCst) {
         return journal::logged(
             "remove the computer",
@@ -663,10 +712,19 @@ pub fn run() {
             start_deploy,
             delete_droplet,
             forget_resource,
-            export_configuration
+            export_configuration,
+            download_backup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+struct ResetFlag<'a>(&'a AtomicBool);
+
+impl Drop for ResetFlag<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
