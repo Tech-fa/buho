@@ -190,7 +190,11 @@ function renderDeployment(next: Deployment): void {
   if (ready) {
     const password = next.adminPassword ? ` The password to sign in is ${next.adminPassword}.` : "";
     const address = signInEmail ? ` Sign in with ${signInEmail}.` : "";
-    finishedDetail.textContent = `People on your team can open the app in a browser at ${next.appUrl}.${address}${password} Keep the password private.`;
+    const browser = `People on your team can open the app in a browser at ${next.appUrl}.`;
+    const inBuho = canOpenInBuho(next.appUrl)
+      ? ""
+      : " Buho opens https pages, and localhost. Set up your domain below before the web app can open in Buho.";
+    finishedDetail.textContent = `${browser}${address}${password} Keep the password private.${inBuho}`;
   }
   const busy = next.running;
   deployButton.disabled = busy;
@@ -260,6 +264,30 @@ function releaseText(next: Deployment): string {
     return `This computer is running service ${next.apiVersion} and website ${next.uiVersion}.`;
   }
   return `This computer is running service ${next.apiVersion} and website ${next.uiVersion}. ${newest} Choose Update my app to get the newest.`;
+}
+
+function canOpenInBuho(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol === "https:") {
+      return true;
+    }
+    if (url.protocol !== "http:") {
+      return false;
+    }
+    const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (host === "localhost" || host === "::1") {
+      return true;
+    }
+    const parts = host.split(".");
+    if (parts.length !== 4) {
+      return false;
+    }
+    const numbers = parts.map((part) => Number(part));
+    return numbers[0] === 127 && numbers.every((part) => Number.isInteger(part) && part >= 0 && part <= 255);
+  } catch {
+    return false;
+  }
 }
 
 function chosenEmail(value: string): string {

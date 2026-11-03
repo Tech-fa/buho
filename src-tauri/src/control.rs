@@ -65,6 +65,8 @@ pub fn is_shell_page(page: &Url, setup: &Url) -> bool {
     page.origin() == setup.origin()
 }
 
+pub const OPEN_PAGE_LIMIT: &str = "Buho opens https pages, and localhost. Set up your domain before the web app can open in Buho.";
+
 pub fn public_app_url(value: &str) -> Result<String, String> {
     let url = Url::parse(value.trim())
         .map_err(|_| "Enter a full URL, like https://app.example.com.".to_string())?;
@@ -77,7 +79,27 @@ pub fn public_app_url(value: &str) -> Result<String, String> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err("Remove the username and password from the app URL.".into());
     }
+    if !opens_in_buho(&url) {
+        return Err(OPEN_PAGE_LIMIT.into());
+    }
     Ok(url.to_string())
+}
+
+fn opens_in_buho(url: &Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => is_loopback(url),
+        _ => false,
+    }
+}
+
+fn is_loopback(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
 }
 
 pub fn remembered_app_url(data_dir: &Path) -> Option<String> {
@@ -672,9 +694,15 @@ mod tests {
     }
 
     #[test]
-    fn a_public_url_must_be_http_and_have_no_password() {
+    fn a_public_url_must_be_https_or_localhost_and_have_no_password() {
         assert!(public_app_url("https://app.example.com/home").is_ok());
+        assert!(public_app_url("http://localhost:3003").is_ok());
         assert!(public_app_url("http://127.0.0.1:3003").is_ok());
+        assert!(public_app_url("http://[::1]:3003").is_ok());
+        let public_http = public_app_url("http://203.0.113.10").unwrap_err();
+        assert!(public_http.contains("https"));
+        assert!(public_http.contains("localhost"));
+        assert!(public_http.contains("domain"));
         assert!(public_app_url("javascript:alert(1)").is_err());
         assert!(public_app_url("https://user:secret@app.example.com").is_err());
         assert!(public_app_url("not a url").is_err());
