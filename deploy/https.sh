@@ -39,16 +39,22 @@ config_path, env_path, api_url, frontend_url = sys.argv[1:]
 pathlib.Path(config_path).write_text(json.dumps({"apiUrl": api_url}) + "\n")
 env = pathlib.Path(env_path)
 lines = env.read_text().splitlines()
-found = False
+found_front = False
+found_api = False
 out = []
 for line in lines:
     if line.startswith("FRONTEND_URL="):
         out.append("FRONTEND_URL=" + frontend_url)
-        found = True
+        found_front = True
+    elif line.startswith("API_PUBLIC_URL="):
+        out.append("API_PUBLIC_URL=" + api_url)
+        found_api = True
     else:
         out.append(line)
-if not found:
+if not found_front:
     out.append("FRONTEND_URL=" + frontend_url)
+if not found_api:
+    out.append("API_PUBLIC_URL=" + api_url)
 env.write_text("\n".join(out) + "\n")
 PY
 }

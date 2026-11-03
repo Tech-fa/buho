@@ -833,15 +833,9 @@ fn upload_runtime(
     )
 }
 
-fn upload_env(
-    config: &DeploymentConfig,
-    data_dir: &Path,
-    key: &Path,
-    known_hosts: &Path,
-) -> Result<(), String> {
-    let env_path = data_dir.join("droplet.env");
-    let contents = format!(
-        "DB_HOST=mysql\nDB_PORT=3306\nDB_USER=documents\nDB_PASSWORD={db}\nDB_NAME=documents\nNODE_ENV=production\nPORT=3012\nRESEND_API_KEY={resend}\nFRONTEND_URL=http://{ip}\nFILE_STORAGE_DIR=storage\nFROM_EMAIL={from}\nENCRYPTION_KEY={encryption}\nENVIRONMENT=production\nADMIN_EMAIL={admin}\nADMIN_PASSWORD={admin_password}\nSECRET_KEY={secret}\nREDIS_URI=redis://redis:6379\nRABBIT_HOST=amqp://guest:guest@rabbitmq:5672\nPUBLIC_IP={ip}\n",
+fn droplet_env(config: &DeploymentConfig) -> String {
+    format!(
+        "DB_HOST=mysql\nDB_PORT=3306\nDB_USER=documents\nDB_PASSWORD={db}\nDB_NAME=documents\nNODE_ENV=production\nPORT=3012\nRESEND_API_KEY={resend}\nFRONTEND_URL=http://{ip}\nAPI_PUBLIC_URL=http://{ip}:3012\nFILE_STORAGE_DIR=storage\nFROM_EMAIL={from}\nENCRYPTION_KEY={encryption}\nENVIRONMENT=production\nADMIN_EMAIL={admin}\nADMIN_PASSWORD={admin_password}\nSECRET_KEY={secret}\nREDIS_URI=redis://redis:6379\nRABBIT_HOST=amqp://guest:guest@rabbitmq:5672\nPUBLIC_IP={ip}\n",
         db = config.db_password,
         resend = config.resend_api_key,
         ip = config.public_ip,
@@ -850,7 +844,17 @@ fn upload_env(
         admin = config.admin_email,
         admin_password = config.admin_password,
         secret = config.secret_key,
-    );
+    )
+}
+
+fn upload_env(
+    config: &DeploymentConfig,
+    data_dir: &Path,
+    key: &Path,
+    known_hosts: &Path,
+) -> Result<(), String> {
+    let env_path = data_dir.join("droplet.env");
+    let contents = droplet_env(config);
     write_private_file(&env_path, contents.as_bytes())?;
     let destination = format!(
         "{}:/opt/fourss/desktop-shell/deploy/.env",
@@ -1713,6 +1717,16 @@ mod tests {
             "available": true,
             "sizes": ["s-2vcpu-4gb"]
         })));
+    }
+
+    #[test]
+    fn file_links_use_the_public_api_address() {
+        let mut config = DeploymentConfig::default();
+        config.public_ip = "203.0.113.10".into();
+        let env = droplet_env(&config);
+        assert!(env.contains("API_PUBLIC_URL=http://203.0.113.10:3012\n"));
+        assert!(env.contains("FRONTEND_URL=http://203.0.113.10\n"));
+        assert!(!env.contains("localhost"));
     }
 
     #[test]
