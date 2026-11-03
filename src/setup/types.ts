@@ -61,6 +61,13 @@ export type ReleaseVersions = {
   uiVersion: string;
 };
 
+export type AppUpdate = {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  downloadUrl: string;
+};
+
 export type RegionChoice = {
   slug: string;
   name: string;

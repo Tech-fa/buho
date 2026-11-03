@@ -1,0 +1,102 @@
+#!/bin/bash
+# Buho version tag hook. Git runs this before a push leaves this computer.
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+zero_sha() {
+  case "$1" in
+    0000000000000000000000000000000000000000|0000000000000000000000000000000000000000000000000000000000000000)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+count=0
+found_version=""
+found_sha=""
+found_remote=""
+
+while IFS=' ' read -r local_ref local_sha _remote_ref remote_sha; do
+  if [ -z "${local_ref:-}" ]; then
+    continue
+  fi
+  if zero_sha "$local_sha"; then
+    continue
+  fi
+  case "$local_ref" in
+    refs/tags/v*)
+      version="${local_ref#refs/tags/v}"
+      if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        continue
+      fi
+      count=$((count + 1))
+      found_version="$version"
+      found_sha="$local_sha"
+      found_remote="$remote_sha"
+      ;;
+  esac
+done
+
+if [ "$count" -eq 0 ]; then
+  exit 0
+fi
+
+if [ "$count" -gt 1 ]; then
+  echo "Push one version tag at a time." >&2
+  exit 1
+fi
+
+if zero_sha "$found_remote"; then
+  :
+else
+  echo "Tag v${found_version} is already on the remote. Make a new tag instead of moving this one." >&2
+  exit 1
+fi
+
+commit=$(git rev-parse "${found_sha}^{commit}")
+
+read_version() {
+  git show "${commit}:$1" | node "$root/scripts/set-buho-version.mjs" --print "$1"
+}
+
+package_version=$(read_version package.json)
+cargo_version=$(read_version src-tauri/Cargo.toml)
+app_version=$(read_version src-tauri/tauri.conf.json)
+
+if [ "$package_version" = "$found_version" ] && [ "$cargo_version" = "$found_version" ] && [ "$app_version" = "$found_version" ]; then
+  exit 0
+fi
+
+if [ "$(git rev-parse HEAD)" != "$commit" ]; then
+  echo "Check out the commit that v${found_version} points at, then push the tag again." >&2
+  exit 1
+fi
+
+dirty=$(git status --porcelain -- package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json)
+if [ -n "$dirty" ]; then
+  echo "Version files have uncommitted changes. Commit or stash them, then push the tag again." >&2
+  exit 1
+fi
+
+node "$root/scripts/set-buho-version.mjs" "$found_version"
+git add -- package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+git commit --only -m "Set Buho version to ${found_version}." -- package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json </dev/null
+
+tag="v${found_version}"
+if [ "$(git cat-file -t "$found_sha")" = "tag" ]; then
+  message=$(git for-each-ref "refs/tags/${tag}" --format='%(contents)')
+  if [ -z "$message" ]; then
+    message="Buho ${found_version}"
+  fi
+  git tag -f -a "$tag" HEAD -m "$message" >/dev/null
+else
+  git tag -f "$tag" HEAD >/dev/null
+fi
+
+echo "v${tag#v} did not match the version in that commit." >&2
+echo "package.json, Cargo.toml, and the app version are now ${found_version}, and ${tag} points at that commit." >&2
+echo "This push was stopped so the old tag would not be published. Push ${tag} again." >&2
+exit 1

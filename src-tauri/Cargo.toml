@@ -1,6 +1,6 @@
 [package]
 name = "desktop-shell"
-version = "0.1.0"
+version = "1.0.4"
 description = "Desktop app for setting up and opening a web app."
 authors = []
 edition = "2024"

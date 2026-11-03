@@ -1,5 +1,5 @@
 import { logError } from "./log";
-import { deploymentIsRunning, mountDeploy, refreshDeployment, watchForNewerRelease } from "./setup/deploy";
+import { deploymentIsRunning, mountDeploy, refreshDeployment, watchForAppUpdate, watchForNewerRelease } from "./setup/deploy";
 import "./styles.css";
 
 const summary = document.querySelector("#summary") as HTMLParagraphElement;
@@ -19,6 +19,7 @@ async function boot(): Promise<void> {
         }
       }, 2000);
       watchForNewerRelease();
+      watchForAppUpdate();
       return;
     } catch (error) {
       logError("open the window", error);

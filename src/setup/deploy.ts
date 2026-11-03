@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
 import { logError } from "../log";
-import { DROPLET_SIZE, RESEND_URL, TOKEN_URL, type Deployment, type RegionChoice, type ReleaseVersions } from "./types";
+import { DROPLET_SIZE, RESEND_URL, TOKEN_URL, type AppUpdate, type Deployment, type RegionChoice, type ReleaseVersions } from "./types";
 
 const DEFAULT_FROM_EMAIL = "notifications@resend.dev";
 const WORKING = "Working on making your app. This can take a while. Leave this window open.";
@@ -65,6 +65,9 @@ const domainNameHint = document.querySelector("#domain-name-hint") as HTMLParagr
 const httpsState = document.querySelector("#https-state") as HTMLParagraphElement;
 const saveDomainButton = document.querySelector("#save-domain") as HTMLButtonElement;
 const enableHttpsButton = document.querySelector("#enable-https") as HTMLButtonElement;
+const buhoUpdate = document.querySelector("#buho-update") as HTMLDivElement;
+const buhoUpdateText = document.querySelector("#buho-update-text") as HTMLParagraphElement;
+const buhoUpdateDownload = document.querySelector("#buho-update-download") as HTMLButtonElement;
 
 let deployment: Deployment | null = null;
 let tokenEditorOpen = false;
@@ -79,6 +82,7 @@ let releaseLoaded = false;
 let sawRunning = false;
 let shownAppUrl = "";
 let shownDomain = "";
+let appDownloadUrl = "";
 
 function plainMessage(message: string): string {
   const text = message.replace(/^Error:\s*/i, "");
@@ -394,6 +398,32 @@ export function watchForNewerRelease(): void {
   }, 15 * 60 * 1000);
 }
 
+function showAppUpdate(notice: AppUpdate): void {
+  if (!notice.updateAvailable || notice.downloadUrl.length === 0) {
+    buhoUpdate.hidden = true;
+    appDownloadUrl = "";
+    return;
+  }
+  appDownloadUrl = notice.downloadUrl;
+  buhoUpdateText.textContent = `A newer Buho is ready. This copy is ${notice.currentVersion}. The newest is ${notice.latestVersion}. Download it, open the installer, and replace this copy.`;
+  buhoUpdate.hidden = false;
+}
+
+async function loadAppUpdate(): Promise<void> {
+  try {
+    showAppUpdate(await invoke<AppUpdate>("app_update"));
+  } catch (error) {
+    logError("buho update", error);
+  }
+}
+
+export function watchForAppUpdate(): void {
+  void loadAppUpdate();
+  window.setInterval(() => {
+    void loadAppUpdate();
+  }, 15 * 60 * 1000);
+}
+
 export async function refreshDeployment(): Promise<void> {
   const next = await invoke<Deployment>("deployment_state");
   if (sawRunning && !next.running) {
@@ -455,6 +485,16 @@ export function mountDeploy(): void {
   });
   document.querySelector("#create-resend")?.addEventListener("click", () => {
     void invoke("open_external", { url: RESEND_URL });
+  });
+  buhoUpdateDownload.addEventListener("click", () => {
+    if (!appDownloadUrl) {
+      return;
+    }
+    void invoke("open_external", { url: appDownloadUrl }).catch((error: unknown) => {
+      logError("buho update", error);
+      buhoUpdateText.textContent =
+        "We could not open the download page. Open buho.tech-fa.ca in a browser and download the newest Buho.";
+    });
   });
   regionSelect.addEventListener("change", () => {
     if (regionSelect.value) {

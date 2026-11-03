@@ -191,6 +191,18 @@ select:focus-visible {
   background: #fef3c7;
 }
 
+#buho-update {
+  margin-top: 1.25rem;
+}
+
+#buho-update p {
+  margin: 0;
+}
+
+#buho-update .actions {
+  margin-top: 0.75rem;
+}
+
 .hint,
 .check {
   margin: 0.35rem 0 0;

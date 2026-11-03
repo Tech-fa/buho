@@ -1,4 +1,5 @@
 mod agent_context;
+mod app_update;
 mod browser;
 mod control;
 mod deploy;
@@ -8,6 +9,7 @@ mod settings;
 mod terminal;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -396,18 +398,40 @@ fn toggle_preview_terminal(app: AppHandle) -> Result<browser::DockView, String> 
     journal::logged("terminal", browser::toggle(&app))
 }
 
+fn external_page_allowed(url: &str) -> bool {
+    url == deploy::TOKEN_URL
+        || url == deploy::RESEND_URL
+        || url == deploy::BILLING_URL
+        || url == app_update::DOWNLOAD_MAC_URL
+        || url == app_update::DOWNLOAD_WINDOWS_URL
+        || url == app_update::SITE_URL
+}
+
+fn browser_command(url: &str) -> Command {
+    if cfg!(windows) {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    } else if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    }
+}
+
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
-    let allowed =
-        url == deploy::TOKEN_URL || url == deploy::RESEND_URL || url == deploy::BILLING_URL;
-    if !allowed {
+    if !external_page_allowed(&url) {
         return journal::logged(
             "open page",
             Err("That page cannot be opened from the shell.".into()),
         );
     }
-    let status = std::process::Command::new("open")
-        .arg(&url)
+    let status = browser_command(&url)
         .status()
         .map_err(|err| format!("Could not open the page: {err}"));
     journal::logged(
@@ -418,6 +442,18 @@ fn open_external(url: String) -> Result<(), String> {
             Err(err) => Err(err),
         },
     )
+}
+
+#[tauri::command]
+fn app_update(app: AppHandle) -> app_update::AppUpdate {
+    let current = app.package_info().version.to_string();
+    match app_update::check(&current) {
+        Ok(notice) => notice,
+        Err(err) => {
+            journal::write("buho update", &err);
+            app_update::notice_for(&current, std::env::consts::OS, "")
+        }
+    }
 }
 
 #[tauri::command]
@@ -702,6 +738,7 @@ pub fn run() {
             toggle_preview_terminal,
             deployment_state,
             available_versions,
+            app_update,
             save_deployment,
             save_domain,
             start_https,
@@ -751,6 +788,20 @@ mod tests {
         assert_eq!(source, "none");
         assert!(status.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_download_page_can_be_opened_and_other_pages_cannot() {
+        assert!(super::external_page_allowed(super::app_update::DOWNLOAD_MAC_URL));
+        assert!(super::external_page_allowed(
+            super::app_update::DOWNLOAD_WINDOWS_URL
+        ));
+        assert!(super::external_page_allowed(super::app_update::SITE_URL));
+        assert!(super::external_page_allowed(crate::deploy::TOKEN_URL));
+        assert!(!super::external_page_allowed("https://example.com"));
+        assert!(!super::external_page_allowed(
+            "https://buho.tech-fa.ca/download/mac.evil"
+        ));
     }
 
     #[test]

@@ -192,11 +192,17 @@ jobs:
         id: release
         shell: bash
         run: |
+          app_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             version="${GITHUB_REF_NAME#v}"
+            if [[ "$version" != "$app_version" ]]; then
+              echo "Tag v${version} does not match src-tauri/tauri.conf.json version ${app_version}."
+              echo "Push the tag again without --no-verify so the pre-push hook can set the version."
+              exit 1
+            fi
             notes="$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")"
           else
-            version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+            version="$app_version"
             notes="$(git log -1 --format=%B)"
           fi
           notes="${notes:-Buho ${version}}"

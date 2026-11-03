@@ -1,13 +1,14 @@
 {
   "name": "buho",
   "private": true,
-  "version": "0.1.1",
+  "version": "1.0.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "prepare": "node scripts/install-git-hooks.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
