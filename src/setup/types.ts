@@ -54,6 +54,10 @@ export type Deployment = {
   appHost: string;
   apiHost: string;
   httpsReady: boolean;
+  host: "digitalocean" | "server";
+  sshUser: string;
+  hasSshKey: boolean;
+  installed: boolean;
 };
 
 export type ReleaseVersions = {

@@ -23,7 +23,31 @@
         </div>
       </div>
 
-      <section class="panel resource">
+      <section class="panel resource" id="host-panel">
+        <div class="resource-head">
+          <h2>Where the app runs</h2>
+          <p id="host-state" class="hint"></p>
+        </div>
+        <p>DigitalOcean creates a computer for you. Or use a computer you already have. Either way, we sign in with SSH and install the app there.</p>
+        <div class="choices" role="radiogroup" aria-label="Where the app runs">
+          <label class="choice">
+            <input id="host-digitalocean" type="radio" name="app-host" value="digitalocean" checked />
+            <span>
+              <strong>DigitalOcean</strong>
+              We create the computer and sign in as root.
+            </span>
+          </label>
+          <label class="choice">
+            <input id="host-server" type="radio" name="app-host" value="server" />
+            <span>
+              <strong>A computer I already have</strong>
+              You give us the IP address, the user name, and the private key.
+            </span>
+          </label>
+        </div>
+      </section>
+
+      <section class="panel resource" id="token-panel">
         <div class="resource-head">
           <h2>DigitalOcean key</h2>
           <p id="token-state" class="hint"></p>
@@ -45,6 +69,34 @@
             <button id="save-token" class="primary" type="button">Save this key</button>
           </div>
         </div>
+        <p id="token-error" class="error" role="alert"></p>
+      </section>
+
+      <section class="panel resource" id="server-panel" hidden>
+        <div class="resource-head">
+          <h2>Your computer</h2>
+          <p id="server-state" class="hint"></p>
+        </div>
+        <div class="actions">
+          <button id="edit-server" type="button">Change</button>
+          <button id="remove-server" type="button">Remove</button>
+        </div>
+        <div id="server-editor" hidden>
+          <p>We sign in with SSH on port 22 and install the app there. Use root, or a user that can run commands as root without a password. The private key must not ask for a password.</p>
+          <label for="server-ip">IP address</label>
+          <input id="server-ip" type="text" spellcheck="false" autocomplete="off" placeholder="203.0.113.10" />
+          <label for="server-user">User name</label>
+          <input id="server-user" type="text" spellcheck="false" autocomplete="off" placeholder="root" />
+          <label for="server-key">Private key</label>
+          <div class="path-row">
+            <input id="server-key" type="text" readonly />
+            <button id="import-key" type="button">Choose key</button>
+          </div>
+          <div class="actions">
+            <button id="save-server" class="primary" type="button">Save this computer</button>
+          </div>
+        </div>
+        <p id="server-error" class="error" role="alert"></p>
       </section>
 
       <section class="panel resource">
@@ -65,6 +117,7 @@
             <button id="save-resend" class="primary" type="button">Save this email key</button>
           </div>
         </div>
+        <p id="resend-error" class="error" role="alert"></p>
       </section>
 
       <section class="panel resource">
@@ -84,6 +137,7 @@
             <button id="save-from-email" class="primary" type="button">Save this address</button>
           </div>
         </div>
+        <p id="from-email-error" class="error" role="alert"></p>
       </section>
 
       <section class="panel resource">
@@ -103,6 +157,7 @@
             <button id="save-admin-email" class="primary" type="button">Save this email</button>
           </div>
         </div>
+        <p id="admin-email-error" class="error" role="alert"></p>
       </section>
 
       <section class="panel resource">
@@ -116,14 +171,22 @@
           <button id="delete-droplet" type="button">Remove this computer</button>
         </div>
         <div id="region-step">
-          <p>Choose a place close to your team. If most people are in one city, choose that city. A closer place usually makes the app feel faster.</p>
-          <p id="region-warning" class="callout warning" hidden></p>
-          <label for="region">Place</label>
-          <select id="region"></select>
-          <p class="hint">This list only shows places DigitalOcean can use right now. If the place you want is missing, it is not available. Choose another place from the list.</p>
+          <div id="place-fields">
+            <p>Choose a place close to your team. If most people are in one city, choose that city. A closer place usually makes the app feel faster.</p>
+            <p id="region-warning" class="callout warning" hidden></p>
+            <label for="region">Place</label>
+            <select id="region"></select>
+            <p class="hint">This list only shows places DigitalOcean can use right now. If the place you want is missing, it is not available. Choose another place from the list.</p>
+          </div>
+          <p id="server-deploy-note" hidden>We will sign in to the computer you saved and install the app there. Leave this window open.</p>
           <div class="actions">
             <button id="deploy" class="primary" type="button">Create my app</button>
           </div>
+        </div>
+        <p id="deploy-status" class="hint"></p>
+        <div id="deploy-error" class="error-banner" role="alert" hidden>
+          <p id="deploy-error-text"></p>
+          <button id="deploy-error-close" class="banner-close" type="button" aria-label="Close">×</button>
         </div>
       </section>
 
@@ -136,14 +199,19 @@
           <button id="download-config" type="button">Save a copy of my setup</button>
         </div>
         <p id="download-note" class="hint"></p>
+        <p id="download-error" class="error" role="alert"></p>
         <h2>Download your data</h2>
         <p>This saves one zip file from the computer that runs your app. Inside it is a copy of the database and the files people uploaded. Keep the file private.</p>
         <div class="actions">
           <button id="download-backup" type="button">Download my database and files</button>
         </div>
         <p id="backup-note" class="hint"></p>
+        <p id="backup-error" class="error" role="alert"></p>
+      </section>
+
+      <section class="panel" id="domain-panel" hidden>
         <h2>Use your own domain</h2>
-        <p>Buho opens https pages, and localhost. Set up the domain you own, such as example.com, so the web app can open in Buho. Choose Add domain, add the rows, then tell us the rows are in place.</p>
+        <p>Set up the domain you own, such as example.com, so people can open the app at an address you control. Choose Add domain, add the rows, then tell us the rows are in place.</p>
         <label for="domain">Domain you own</label>
         <input id="domain" type="text" spellcheck="false" autocomplete="off" placeholder="example.com" />
         <div class="actions">
@@ -179,14 +247,16 @@
             <button id="enable-https" class="primary" type="button">The rows are in place</button>
           </div>
         </div>
+        <p id="domain-status" class="hint"></p>
+        <div id="domain-error" class="error-banner" role="alert" hidden>
+          <p id="domain-error-text"></p>
+          <button id="domain-error-close" class="banner-close" type="button" aria-label="Close">×</button>
+        </div>
       </section>
 
-      <p id="deploy-status" class="hint"></p>
-      <p id="deploy-error" class="error" role="alert"></p>
-
       <section class="panel" id="page-panel">
-        <h2>Open a page</h2>
-        <p>Buho opens https pages, and localhost. Set up your domain before the web app can open in Buho. The page opens in its own window. Pull the terminal up from the bottom of that window to work with the app.</p>
+        <h2>Open the app</h2>
+        <p>The address opens in your browser.</p>
         <div class="actions" id="running-actions" hidden>
           <button id="open-running-app" class="primary" type="button">App is running</button>
         </div>

@@ -86,6 +86,12 @@ pub struct DeploymentConfig {
     pub domain: String,
     #[serde(default)]
     pub https_ready: bool,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub ssh_user: String,
+    #[serde(default)]
+    pub installed: bool,
 }
 
 fn default_region() -> String {
@@ -115,6 +121,9 @@ impl Default for DeploymentConfig {
             ui_version: String::new(),
             domain: String::new(),
             https_ready: false,
+            host: String::new(),
+            ssh_user: String::new(),
+            installed: false,
         }
     }
 }
@@ -152,6 +161,10 @@ pub struct DeploymentView {
     pub app_host: String,
     pub api_host: String,
     pub https_ready: bool,
+    pub host: String,
+    pub ssh_user: String,
+    pub has_ssh_key: bool,
+    pub installed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -223,6 +236,18 @@ pub fn save_input(data_dir: &Path, input: DeploymentInput) -> Result<DeploymentC
 
 pub fn delete_droplet(data_dir: &Path) -> Result<DeploymentConfig, String> {
     let mut config = ensure_config(data_dir)?;
+    if is_own_server(&config) {
+        config.installed = false;
+        config.public_ip.clear();
+        config.ssh_user.clear();
+        config.ssh_private_key.clear();
+        config.ssh_public_key.clear();
+        config.ssh_key_id.clear();
+        config.https_ready = false;
+        let _ = fs::remove_file(data_dir.join("known_hosts"));
+        write_config(&config_path(data_dir), &config)?;
+        return Ok(config);
+    }
     if config.droplet_id != 0 {
         let path = format!("/droplets/{}", config.droplet_id);
         match do_request(&config.digital_ocean_token, "DELETE", &path, None) {
@@ -257,6 +282,100 @@ pub fn forget_resource(data_dir: &Path, kind: &str) -> Result<DeploymentConfig, 
     Ok(config)
 }
 
+pub fn save_host(data_dir: &Path, host: &str) -> Result<DeploymentConfig, String> {
+    let host = match host {
+        "digitalocean" | HOST_SERVER => host,
+        _ => {
+            return Err("Choose DigitalOcean, or a computer you already have.".into());
+        }
+    };
+    let mut config = ensure_config(data_dir)?;
+    if shown_host(&config) == host {
+        config.host = host.to_string();
+        write_config(&config_path(data_dir), &config)?;
+        return Ok(config);
+    }
+    if config.droplet_id != 0 {
+        return Err(
+            "Remove the DigitalOcean computer first. After that, you can use a computer you already have."
+                .into(),
+        );
+    }
+    if is_own_server(&config) && config.installed {
+        return Err("Forget this computer first. After that, you can use DigitalOcean.".into());
+    }
+    if host == HOST_SERVER && !config.ssh_key_id.is_empty() {
+        config.ssh_private_key.clear();
+        config.ssh_public_key.clear();
+        config.ssh_key_id.clear();
+    }
+    config.host = host.to_string();
+    write_config(&config_path(data_dir), &config)?;
+    Ok(config)
+}
+
+pub fn save_own_server(
+    data_dir: &Path,
+    ip: &str,
+    user: &str,
+    key_path: &Path,
+) -> Result<DeploymentConfig, String> {
+    let mut config = ensure_config(data_dir)?;
+    if config.droplet_id != 0 {
+        return Err(
+            "Remove the DigitalOcean computer first. After that, you can use a computer you already have."
+                .into(),
+        );
+    }
+    let ip = ip.trim();
+    require_target_ip(ip)?;
+    let user = match user.trim() {
+        "" => "root",
+        trimmed => trimmed,
+    };
+    if !valid_ssh_user(user) {
+        return Err("Type the user name you use to sign in to that computer, such as root.".into());
+    }
+    if key_path.as_os_str().is_empty() {
+        if config.ssh_private_key.is_empty() {
+            return Err("Choose the private key file.".into());
+        }
+    } else {
+        let private_key = load_private_key(key_path)?;
+        let public_key = public_from_private(data_dir, &private_key)?;
+        config.ssh_private_key = private_key;
+        config.ssh_public_key = public_key;
+        config.ssh_key_id.clear();
+    }
+    if config.public_ip != ip {
+        config.https_ready = false;
+        config.installed = false;
+        let _ = fs::remove_file(data_dir.join("known_hosts"));
+    }
+    config.public_ip = ip.to_string();
+    config.ssh_user = user.to_string();
+    config.host = HOST_SERVER.into();
+    write_config(&config_path(data_dir), &config)?;
+    Ok(config)
+}
+
+pub fn clear_own_server(data_dir: &Path) -> Result<DeploymentConfig, String> {
+    let mut config = ensure_config(data_dir)?;
+    if !is_own_server(&config) {
+        return Err("Choose a computer you already have first.".into());
+    }
+    if config.installed || config.droplet_id != 0 {
+        return Err("Forget this computer from the section below first.".into());
+    }
+    config.public_ip.clear();
+    config.ssh_user.clear();
+    config.ssh_private_key.clear();
+    config.ssh_public_key.clear();
+    config.ssh_key_id.clear();
+    write_config(&config_path(data_dir), &config)?;
+    Ok(config)
+}
+
 pub fn verify_token(token: &str) -> Result<(), String> {
     if token.trim().is_empty() {
         return Err("Paste the key from DigitalOcean.".into());
@@ -272,7 +391,7 @@ pub fn export_configuration(data_dir: &Path, destination: &Path) -> Result<(), S
         return Err("Choose a different folder for the copy.".into());
     }
     let config = ensure_config(data_dir)?;
-    if config.public_ip.is_empty() {
+    if !app_is_installed(&config) {
         return Err("Finish making your app before you save a copy.".into());
     }
     let bytes = serde_json::to_vec_pretty(&config).map_err(|err| err.to_string())?;
@@ -290,7 +409,7 @@ pub fn download_backup(data_dir: &Path, destination: &Path) -> Result<(), String
         return Err("Choose a different file for the download.".into());
     }
     let config = ensure_config(data_dir)?;
-    if config.public_ip.is_empty() || config.droplet_id == 0 || config.ssh_private_key.is_empty() {
+    if !app_is_installed(&config) || config.ssh_private_key.is_empty() {
         return Err("Finish making your app before you download your database and files.".into());
     }
     require_ip(&config.public_ip)?;
@@ -303,9 +422,11 @@ pub fn download_backup(data_dir: &Path, destination: &Path) -> Result<(), String
         return Err("Choose a different file for the download.".into());
     }
     let _remove_local = RemoveFile(local_tar.clone());
+    let user = login_user(&config);
     let fetched = fetch_backup(
         &key_path,
         &known_hosts,
+        &user,
         &config.public_ip,
         &remote,
         &command,
@@ -315,6 +436,7 @@ pub fn download_backup(data_dir: &Path, destination: &Path) -> Result<(), String
     let _ = ssh_run(
         &key_path,
         &known_hosts,
+        &user,
         &config.public_ip,
         &format!("rm -f {}", shell_quote(&remote)),
     );
@@ -408,6 +530,10 @@ pub fn view(config: DeploymentConfig, status: &str, running: bool) -> Deployment
     } else {
         format!("http://{}", config.public_ip)
     };
+    let host = shown_host(&config);
+    let ssh_user = config.ssh_user.clone();
+    let has_ssh_key = !config.ssh_private_key.is_empty();
+    let installed = app_is_installed(&config);
     DeploymentView {
         has_digital_ocean_token: !config.digital_ocean_token.is_empty(),
         has_resend_api_key: !config.resend_api_key.is_empty(),
@@ -432,6 +558,10 @@ pub fn view(config: DeploymentConfig, status: &str, running: bool) -> Deployment
         app_host,
         api_host,
         https_ready: config.https_ready,
+        host,
+        ssh_user,
+        has_ssh_key,
+        installed,
     }
 }
 
@@ -447,22 +577,18 @@ pub fn provision(
     report: &mut dyn FnMut(String),
 ) -> Result<DeploymentConfig, String> {
     let mut config = ensure_config(data_dir)?;
-    require_field(&config.digital_ocean_token, "The DigitalOcean key")?;
-    require_field(&config.resend_api_key, "The email key")?;
-    require_field(&config.region, "A place close to your team")?;
-    if !acceptable_email(&config.admin_email) {
-        return Err("Type the email address you will use to sign in.".into());
-    }
+    deploy_blockers(&config)?;
     config.from_email = effective_from_email(&config.from_email);
-    if !acceptable_email(&config.from_email) {
-        return Err("Type the address people should see when the app emails them.".into());
-    }
     let release = available_versions()?;
     config.api_version = release.api_version;
     config.ui_version = release.ui_version;
     write_config(&config_path(data_dir), &config)?;
-    config.size = DROPLET_SIZE.into();
-    let new_app = config.droplet_id == 0;
+    let own_server = is_own_server(&config);
+    let new_app = if own_server {
+        config.encryption_key.trim().is_empty()
+    } else {
+        config.droplet_id == 0
+    };
     config.encryption_key = encryption_key_for_app(&config.encryption_key, new_app);
     if config.admin_password.is_empty() {
         config.admin_password = random_token(20);
@@ -473,84 +599,96 @@ pub fn provision(
     if config.secret_key.is_empty() {
         config.secret_key = random_token(32);
     }
-    if config.droplet_name.is_empty() {
-        config.droplet_name = "fourss-backend".into();
+    if !own_server {
+        config.size = DROPLET_SIZE.into();
+        if config.droplet_name.is_empty() {
+            config.droplet_name = "fourss-backend".into();
+        }
     }
     write_config(&config_path(data_dir), &config)?;
 
-    if config.ssh_private_key.is_empty() || config.ssh_public_key.is_empty() {
-        report(working_message());
-        generate_ssh_key(data_dir, &mut config)?;
-        write_config(&config_path(data_dir), &config)?;
-    }
-    if config.ssh_key_id.is_empty() {
-        report(working_message());
-        let created = do_request(
-            &config.digital_ocean_token,
-            "POST",
-            "/account/keys",
-            Some(json!({
-                "name": "documents-shell",
-                "public_key": config.ssh_public_key,
-            })),
-        )?;
-        config.ssh_key_id = created
-            .pointer("/ssh_key/id")
-            .and_then(Value::as_u64)
-            .map(|id| id.to_string())
-            .ok_or_else(|| "DigitalOcean did not finish saving the key. Try again.".to_string())?;
-        write_config(&config_path(data_dir), &config)?;
-    }
+    if !own_server {
+        if config.ssh_private_key.is_empty() || config.ssh_public_key.is_empty() {
+            report(working_message());
+            generate_ssh_key(data_dir, &mut config)?;
+            write_config(&config_path(data_dir), &config)?;
+        }
+        if config.ssh_key_id.is_empty() {
+            report(working_message());
+            let created = do_request(
+                &config.digital_ocean_token,
+                "POST",
+                "/account/keys",
+                Some(json!({
+                    "name": "documents-shell",
+                    "public_key": config.ssh_public_key,
+                })),
+            )?;
+            config.ssh_key_id = created
+                .pointer("/ssh_key/id")
+                .and_then(Value::as_u64)
+                .map(|id| id.to_string())
+                .ok_or_else(|| {
+                    "DigitalOcean did not finish saving the key. Try again.".to_string()
+                })?;
+            write_config(&config_path(data_dir), &config)?;
+        }
 
-    if config.droplet_id == 0 || config.public_ip.is_empty() {
-        report(working_message());
-        let key_id: u64 = config
-            .ssh_key_id
-            .parse()
-            .map_err(|_| "The saved SSH key id is not a number.".to_string())?;
-        let created = do_request(
-            &config.digital_ocean_token,
-            "POST",
-            "/droplets",
-            Some(json!({
-                "name": config.droplet_name,
-                "region": config.region,
-                "size": config.size,
-                "image": "ubuntu-24-04-x64",
-                "ssh_keys": [key_id],
-                "tags": ["fourss-backend"],
-            })),
-        )?;
-        config.droplet_id = created
-            .pointer("/droplet/id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| {
-                "DigitalOcean did not finish creating the computer. Try again.".to_string()
-            })?;
-        write_config(&config_path(data_dir), &config)?;
-        report(working_message());
-        config.public_ip = wait_for_ip(&config)?;
-        require_ip(&config.public_ip)?;
-        write_config(&config_path(data_dir), &config)?;
+        if config.droplet_id == 0 || config.public_ip.is_empty() {
+            report(working_message());
+            let key_id: u64 = config
+                .ssh_key_id
+                .parse()
+                .map_err(|_| "The saved SSH key id is not a number.".to_string())?;
+            let created = do_request(
+                &config.digital_ocean_token,
+                "POST",
+                "/droplets",
+                Some(json!({
+                    "name": config.droplet_name,
+                    "region": config.region,
+                    "size": config.size,
+                    "image": "ubuntu-24-04-x64",
+                    "ssh_keys": [key_id],
+                    "tags": ["fourss-backend"],
+                })),
+            )?;
+            config.droplet_id = created
+                .pointer("/droplet/id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    "DigitalOcean did not finish creating the computer. Try again.".to_string()
+                })?;
+            write_config(&config_path(data_dir), &config)?;
+            report(working_message());
+            config.public_ip = wait_for_ip(&config)?;
+            require_ip(&config.public_ip)?;
+            write_config(&config_path(data_dir), &config)?;
+        }
     }
     require_ip(&config.public_ip)?;
+    let user = login_user(&config);
 
     let key_path = write_private_key(data_dir, &config.ssh_private_key)?;
     let known_hosts = data_dir.join("known_hosts");
     report(working_message());
     wait_for_ssh(&config.public_ip)?;
-    let _ = ssh_run(
-        &key_path,
-        &known_hosts,
-        &config.public_ip,
-        "cloud-init status --wait || true",
-    );
+    if !own_server {
+        let _ = ssh_run(
+            &key_path,
+            &known_hosts,
+            &user,
+            &config.public_ip,
+            "cloud-init status --wait || true",
+        );
+    }
 
     report(working_message());
     upload_runtime(
         data_dir,
         &key_path,
         &known_hosts,
+        &user,
         &config.public_ip,
         &config.api_version,
         &config.ui_version,
@@ -561,12 +699,17 @@ pub fn provision(
     ssh_run(
         &key_path,
         &known_hosts,
+        &user,
         &config.public_ip,
         &format!(
             "PUBLIC_IP={} bash /opt/fourss/desktop-shell/deploy/deploy.sh",
             shell_quote(&config.public_ip)
         ),
     )?;
+    if own_server {
+        config.installed = true;
+        write_config(&config_path(data_dir), &config)?;
+    }
     if config.https_ready {
         report("Checking that your domain names still point at the computer.".into());
         if let Err(err) = ensure_dns(&config)
@@ -633,7 +776,10 @@ fn wait_for_ssh(ip: &str) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_secs(3));
     }
-    Err("SSH did not open on the droplet in time.".into())
+    Err(
+        "SSH did not open on that computer in time. Check the IP address and that port 22 is open."
+            .into(),
+    )
 }
 
 fn generate_ssh_key(data_dir: &Path, config: &mut DeploymentConfig) -> Result<(), String> {
@@ -800,36 +946,33 @@ fn upload_runtime(
     data_dir: &Path,
     key: &Path,
     known_hosts: &Path,
+    user: &str,
     ip: &str,
     api_version: &str,
     ui_version: &str,
 ) -> Result<(), String> {
-    ssh_run(
-        key,
-        known_hosts,
-        ip,
-        "mkdir -p /opt/fourss/desktop-shell/deploy",
-    )?;
     let compose_path = data_dir.join("docker-compose.yml");
     let script_path = data_dir.join("deploy.sh");
     let compose = pinned_compose(api_version, ui_version);
     fs::write(&compose_path, compose).map_err(|err| err.to_string())?;
     fs::write(&script_path, DEPLOY_SCRIPT).map_err(|err| err.to_string())?;
-    let destination = format!("{}:/opt/fourss/desktop-shell/deploy/", ssh_destination(ip)?);
-    let status = scp_command(key, known_hosts)
-        .arg(&compose_path)
-        .arg(&script_path)
-        .arg(&destination)
-        .status()
-        .map_err(|err| format!("scp failed to start: {err}"))?;
-    if !status.success() {
-        return Err("Could not upload the deployment files.".into());
-    }
-    ssh_run(
+    place_file(
         key,
         known_hosts,
+        user,
         ip,
-        "chmod 755 /opt/fourss/desktop-shell/deploy/deploy.sh",
+        &compose_path,
+        "/opt/fourss/desktop-shell/deploy/docker-compose.yml",
+        "644",
+    )?;
+    place_file(
+        key,
+        known_hosts,
+        user,
+        ip,
+        &script_path,
+        "/opt/fourss/desktop-shell/deploy/deploy.sh",
+        "755",
     )
 }
 
@@ -856,29 +999,43 @@ fn upload_env(
     let env_path = data_dir.join("droplet.env");
     let contents = droplet_env(config);
     write_private_file(&env_path, contents.as_bytes())?;
-    let destination = format!(
-        "{}:/opt/fourss/desktop-shell/deploy/.env",
-        ssh_destination(&config.public_ip)?
-    );
-    let status = scp_command(key, known_hosts)
-        .arg(&env_path)
-        .arg(&destination)
-        .status()
-        .map_err(|err| format!("scp failed to start: {err}"))?;
-    if !status.success() {
-        return Err("Could not upload the environment file.".into());
-    }
-    ssh_run(
+    let user = login_user(config);
+    place_file(
         key,
         known_hosts,
+        &user,
         &config.public_ip,
-        "chmod 600 /opt/fourss/desktop-shell/deploy/.env",
+        &env_path,
+        "/opt/fourss/desktop-shell/deploy/.env",
+        "600",
     )
 }
 
-fn ssh_run(key: &Path, known_hosts: &Path, ip: &str, remote: &str) -> Result<(), String> {
-    ssh_destination(ip)?;
-    let output = ssh_command(key, known_hosts, ip)
+fn ssh_run(
+    key: &Path,
+    known_hosts: &Path,
+    user: &str,
+    ip: &str,
+    remote: &str,
+) -> Result<(), String> {
+    ssh_exec(key, known_hosts, user, ip, remote, true)
+}
+
+fn ssh_exec(
+    key: &Path,
+    known_hosts: &Path,
+    user: &str,
+    ip: &str,
+    remote: &str,
+    elevate: bool,
+) -> Result<(), String> {
+    let remote = if elevate {
+        remote_command(user, remote)
+    } else {
+        remote.to_string()
+    };
+    ssh_destination(user, ip)?;
+    let output = ssh_command(key, known_hosts, user, ip)
         .arg(remote)
         .output()
         .map_err(|err| format!("ssh failed to start: {err}"))?;
@@ -912,10 +1069,10 @@ fn command_output(output: &Output) -> String {
     }
 }
 
-fn ssh_command(key: &Path, known_hosts: &Path, ip: &str) -> Command {
+fn ssh_command(key: &Path, known_hosts: &Path, user: &str, ip: &str) -> Command {
     let mut command = Command::new("ssh");
     command.args(ssh_base_args(key, known_hosts));
-    command.arg(ssh_destination(ip).unwrap_or_else(|_| "root@invalid".into()));
+    command.arg(ssh_destination(user, ip).unwrap_or_else(|_| "invalid@invalid".into()));
     command
 }
 
@@ -987,14 +1144,24 @@ fn backup_command(remote_tar: &str) -> Result<String, String> {
 fn fetch_backup(
     key: &Path,
     known_hosts: &Path,
+    user: &str,
     ip: &str,
     remote_tar: &str,
     command: &str,
     local_tar: &Path,
     destination: &Path,
 ) -> Result<(), String> {
-    ssh_run(key, known_hosts, ip, command)?;
-    let source = format!("{}:{remote_tar}", ssh_destination(ip)?);
+    ssh_run(key, known_hosts, user, ip, command)?;
+    if user != "root" {
+        ssh_run(
+            key,
+            known_hosts,
+            user,
+            ip,
+            &format!("chmod 644 {}", shell_quote(remote_tar)),
+        )?;
+    }
+    let source = format!("{}:{remote_tar}", ssh_destination(user, ip)?);
     let status = scp_command(key, known_hosts)
         .arg(source)
         .arg(local_tar)
@@ -1210,7 +1377,7 @@ fn random_token(len: usize) -> String {
 }
 
 fn require_https_target(config: &DeploymentConfig) -> Result<(), String> {
-    if config.public_ip.is_empty() || config.droplet_id == 0 || config.ssh_private_key.is_empty() {
+    if !app_is_installed(config) || config.ssh_private_key.is_empty() {
         return Err("Finish making your app before you add a domain.".into());
     }
     normalize_domain(&config.domain)?;
@@ -1251,10 +1418,12 @@ fn apply_https(
     known_hosts: &Path,
 ) -> Result<(), String> {
     let domain = normalize_domain(&config.domain)?;
-    upload_https_script(data_dir, key, known_hosts, &config.public_ip)?;
+    let user = login_user(config);
+    upload_https_script(data_dir, key, known_hosts, &user, &config.public_ip)?;
     ssh_run(
         key,
         known_hosts,
+        &user,
         &config.public_ip,
         &format!(
             "APP_HOST={} API_HOST={} PUBLIC_IP={} ADMIN_EMAIL={} bash /opt/fourss/desktop-shell/deploy/https.sh",
@@ -1271,31 +1440,27 @@ fn upload_https_script(
     data_dir: &Path,
     key: &Path,
     known_hosts: &Path,
+    user: &str,
     ip: &str,
 ) -> Result<(), String> {
-    ssh_run(
-        key,
-        known_hosts,
-        ip,
-        "mkdir -p /opt/fourss/desktop-shell/deploy",
-    )
-    .map_err(|err| format!("https-setup: {err}"))?;
     let script_path = data_dir.join("https.sh");
     fs::write(&script_path, HTTPS_SCRIPT).map_err(|err| err.to_string())?;
-    let destination = format!(
-        "{}:/opt/fourss/desktop-shell/deploy/https.sh",
-        ssh_destination(ip)?
-    );
-    let status = scp_command(key, known_hosts)
-        .arg(&script_path)
-        .arg(&destination)
-        .status()
-        .map_err(|err| format!("scp failed to start: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("https-setup: Could not upload the domain setup.".into())
-    }
+    place_file(
+        key,
+        known_hosts,
+        user,
+        ip,
+        &script_path,
+        "/opt/fourss/desktop-shell/deploy/https.sh",
+        "755",
+    )
+    .map_err(|err| {
+        if err.starts_with("https-setup:") {
+            err
+        } else {
+            format!("https-setup: {err}")
+        }
+    })
 }
 
 pub fn normalize_domain(value: &str) -> Result<String, String> {
@@ -1401,6 +1566,22 @@ pub fn plain_failure(message: &str) -> String {
     if lower.contains("point at") {
         return message.to_string();
     }
+    if lower.contains("password is required")
+        || lower.contains("a terminal is required to read the password")
+        || lower.contains("not in the sudoers")
+        || lower.contains("not allowed to execute")
+    {
+        return "That user cannot run commands as root without a password. Use root, or a user that can.".into();
+    }
+    if lower.contains("permission denied") && lower.contains("publickey") {
+        return "The computer refused this key for that user. Check the user name and the private key.".into();
+    }
+    if lower.contains("host key verification failed")
+        || lower.contains("remote host identification has changed")
+    {
+        return "This computer's SSH identity changed. Forget the computer and save it again."
+            .into();
+    }
     if lower.contains("https-setup") {
         return "We could not secure the domain. Check that both names point at this computer, then try again.".into();
     }
@@ -1491,10 +1672,255 @@ fn require_ip(value: &str) -> Result<IpAddr, String> {
         .map_err(|_| format!("{value} is not a usable IP address."))
 }
 
-fn ssh_destination(ip: &str) -> Result<String, String> {
+const HOST_SERVER: &str = "server";
+
+fn shown_host(config: &DeploymentConfig) -> String {
+    if is_own_server(config) {
+        HOST_SERVER.into()
+    } else {
+        "digitalocean".into()
+    }
+}
+
+fn is_own_server(config: &DeploymentConfig) -> bool {
+    config.host == HOST_SERVER
+}
+
+fn login_user(config: &DeploymentConfig) -> String {
+    if is_own_server(config) {
+        let user = config.ssh_user.trim();
+        if user.is_empty() {
+            "root".into()
+        } else {
+            user.to_string()
+        }
+    } else {
+        "root".into()
+    }
+}
+
+fn app_is_installed(config: &DeploymentConfig) -> bool {
+    if require_ip(&config.public_ip).is_err() || config.ssh_private_key.is_empty() {
+        return false;
+    }
+    if is_own_server(config) {
+        config.installed
+    } else {
+        config.droplet_id != 0
+    }
+}
+
+fn deploy_blockers(config: &DeploymentConfig) -> Result<(), String> {
+    if is_own_server(config) {
+        require_target_ip(&config.public_ip)?;
+        if config.ssh_private_key.trim().is_empty() {
+            return Err("Choose the private key file.".into());
+        }
+        if !valid_ssh_user(&login_user(config)) {
+            return Err(
+                "Type the user name you use to sign in to that computer, such as root.".into(),
+            );
+        }
+    } else {
+        require_field(&config.digital_ocean_token, "The DigitalOcean key")?;
+        require_field(&config.region, "A place close to your team")?;
+    }
+    require_field(&config.resend_api_key, "The email key")?;
+    if !acceptable_email(&config.admin_email) {
+        return Err("Type the email address you will use to sign in.".into());
+    }
+    if !acceptable_email(&effective_from_email(&config.from_email)) {
+        return Err("Type the address people should see when the app emails them.".into());
+    }
+    Ok(())
+}
+
+fn require_target_ip(value: &str) -> Result<IpAddr, String> {
+    let address = require_ip(value)?;
+    if address.is_unspecified() || address.is_multicast() {
+        return Err(format!("{value} is not a usable IP address."));
+    }
+    Ok(address)
+}
+
+fn valid_ssh_user(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    value.len() <= 32
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        })
+}
+
+fn load_private_key(path: &Path) -> Result<String, String> {
+    if !path.is_file() {
+        return Err("Choose the private key file.".into());
+    }
+    let meta = fs::metadata(path).map_err(|_| "Choose the private key file.".to_string())?;
+    if meta.len() == 0 || meta.len() > 64 * 1024 {
+        return Err("Choose a private key file.".into());
+    }
+    let text = fs::read_to_string(path).map_err(|_| "Choose a private key file.".to_string())?;
+    let trimmed = text.trim();
+    if trimmed.contains('\0') || !trimmed.contains("PRIVATE KEY") {
+        return Err(
+            "Choose the private key, not the public key. The file should say PRIVATE KEY.".into(),
+        );
+    }
+    if trimmed.contains("ENCRYPTED") {
+        return Err("This key asks for a password. Choose a key that does not.".into());
+    }
+    Ok(format!("{trimmed}\n"))
+}
+
+fn public_from_private(data_dir: &Path, private_key: &str) -> Result<String, String> {
+    let path = write_private_key(data_dir, private_key)?;
+    let output = Command::new("ssh-keygen")
+        .arg("-y")
+        .arg("-P")
+        .arg("")
+        .arg("-f")
+        .arg(&path)
+        .output()
+        .map_err(|err| format!("ssh-keygen failed: {err}"))?;
+    if !output.status.success() {
+        return Err(
+            "We could not use that private key. Choose a private key that does not ask for a password."
+                .into(),
+        );
+    }
+    let public_key = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !public_key.starts_with("ssh-") {
+        return Err(
+            "We could not use that private key. Choose a private key that does not ask for a password."
+                .into(),
+        );
+    }
+    Ok(public_key)
+}
+
+fn remote_command(user: &str, command: &str) -> String {
+    if user == "root" {
+        command.to_string()
+    } else {
+        format!("sudo -n bash -c {}", shell_quote(command))
+    }
+}
+
+fn safe_remote_path(path: &str) -> bool {
+    (path.starts_with("/opt/fourss/") || path.starts_with("/tmp/buho-"))
+        && !path.contains("..")
+        && !path.chars().any(|character| {
+            character.is_whitespace() || matches!(character, '\'' | '"' | ';' | '&' | '|')
+        })
+}
+
+fn place_file(
+    key: &Path,
+    known_hosts: &Path,
+    user: &str,
+    ip: &str,
+    local: &Path,
+    remote_path: &str,
+    mode: &str,
+) -> Result<(), String> {
+    if !safe_remote_path(remote_path) || !remote_path.starts_with("/opt/fourss/") {
+        return Err("Could not choose a place for the file.".into());
+    }
+    if !matches!(mode, "600" | "644" | "755") {
+        return Err("Could not set the file permissions.".into());
+    }
+    let Some((parent, _)) = remote_path.rsplit_once('/') else {
+        return Err("Could not choose a place for the file.".into());
+    };
+    if parent.is_empty() {
+        return Err("Could not choose a place for the file.".into());
+    }
+    if user == "root" {
+        ssh_run(
+            key,
+            known_hosts,
+            user,
+            ip,
+            &format!("mkdir -p {}", shell_quote(parent)),
+        )?;
+        scp_to(key, known_hosts, user, ip, local, remote_path)?;
+        return ssh_run(
+            key,
+            known_hosts,
+            user,
+            ip,
+            &format!("chmod {mode} {}", shell_quote(remote_path)),
+        );
+    }
+    let stage = format!("/tmp/buho-stage-{}", backup_token());
+    if !safe_remote_path(&stage) {
+        return Err("Could not choose a place for the file.".into());
+    }
+    ssh_exec(
+        key,
+        known_hosts,
+        user,
+        ip,
+        &format!(
+            "mkdir -p {} && chmod 700 {}",
+            shell_quote(&stage),
+            shell_quote(&stage)
+        ),
+        false,
+    )?;
+    let staged = format!("{stage}/payload");
+    scp_to(key, known_hosts, user, ip, local, &staged)?;
+    ssh_run(
+        key,
+        known_hosts,
+        user,
+        ip,
+        &format!(
+            "mkdir -p {} && cp {} {} && chmod {mode} {} && rm -rf {}",
+            shell_quote(parent),
+            shell_quote(&staged),
+            shell_quote(remote_path),
+            shell_quote(remote_path),
+            shell_quote(&stage),
+        ),
+    )
+}
+
+fn scp_to(
+    key: &Path,
+    known_hosts: &Path,
+    user: &str,
+    ip: &str,
+    local: &Path,
+    remote_path: &str,
+) -> Result<(), String> {
+    if !safe_remote_path(remote_path) {
+        return Err("Could not choose a place for the file.".into());
+    }
+    let destination = format!("{}:{remote_path}", ssh_destination(user, ip)?);
+    let status = scp_command(key, known_hosts)
+        .arg(local)
+        .arg(&destination)
+        .status()
+        .map_err(|err| format!("scp failed to start: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Could not upload the deployment files.".into())
+    }
+}
+
+fn ssh_destination(user: &str, ip: &str) -> Result<String, String> {
+    if !valid_ssh_user(user) {
+        return Err("Type the user name you use to sign in to that computer, such as root.".into());
+    }
     match require_ip(ip)? {
-        IpAddr::V4(address) => Ok(format!("root@{address}")),
-        IpAddr::V6(address) => Ok(format!("root@[{address}]")),
+        IpAddr::V4(address) => Ok(format!("{user}@{address}")),
+        IpAddr::V6(address) => Ok(format!("{user}@[{address}]")),
     }
 }
 
@@ -1523,6 +1949,8 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
 
     #[test]
@@ -1562,6 +1990,9 @@ mod tests {
         assert!(!json.contains("db-secret"));
         assert!(!json.contains("enc-secret"));
         assert!(!json.contains("jwt-secret"));
+        assert!(view.has_ssh_key);
+        assert!(!view.installed);
+        assert_eq!(view.host, "digitalocean");
     }
 
     #[test]
@@ -1794,6 +2225,9 @@ mod tests {
         assert_eq!(config.region, "sfo3");
         assert!(config.domain.is_empty());
         assert!(!config.https_ready);
+        assert!(config.host.is_empty());
+        assert!(!config.installed);
+        assert_eq!(view(config, "", false).host, "digitalocean");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1803,6 +2237,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let mut config = ensure_config(&dir).unwrap();
         config.public_ip = "203.0.113.10".into();
+        config.droplet_id = 42;
+        config.ssh_private_key = "private-key".into();
         config.admin_password = "sign-in-secret".into();
         write_config(&config_path(&dir), &config).unwrap();
         let destination = dir.join("copy.json");
@@ -1919,6 +2355,111 @@ mod tests {
         write_sample_tar(&bundle, &[("database.sql", b"")]);
         assert!(pack_backup(&bundle, &destination).is_err());
         assert!(!destination.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_imported_computer_is_reached_with_its_own_user_and_key() {
+        let dir = std::env::temp_dir().join(format!("shell-deploy-server-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let key = dir.join("id_ed25519");
+        fs::create_dir_all(&dir).unwrap();
+        let created = Command::new("ssh-keygen")
+            .args([
+                "-t",
+                "ed25519",
+                "-f",
+                &key.to_string_lossy(),
+                "-N",
+                "",
+                "-C",
+                "buho-test",
+            ])
+            .status()
+            .unwrap();
+        assert!(created.success());
+        let saved = save_own_server(&dir, " 203.0.113.10 ", " ubuntu ", &key).unwrap();
+        assert_eq!(saved.host, "server");
+        assert_eq!(saved.public_ip, "203.0.113.10");
+        assert_eq!(saved.ssh_user, "ubuntu");
+        assert!(saved.ssh_private_key.contains("PRIVATE KEY"));
+        assert!(saved.ssh_public_key.starts_with("ssh-ed25519"));
+        assert!(!saved.installed);
+        let seen = view(saved.clone(), "", false);
+        let json = serde_json::to_string(&seen).unwrap();
+        assert_eq!(seen.host, "server");
+        assert_eq!(seen.ssh_user, "ubuntu");
+        assert!(seen.has_ssh_key);
+        assert!(!seen.installed);
+        assert!(!json.contains("PRIVATE KEY"));
+        let kept = save_own_server(&dir, "203.0.113.10", "deploy", Path::new("")).unwrap();
+        assert_eq!(kept.ssh_user, "deploy");
+        assert_eq!(kept.ssh_private_key, saved.ssh_private_key);
+        assert!(save_own_server(&dir, "example.com", "root", &key).is_err());
+        assert!(save_own_server(&dir, "203.0.113.10", "root;id", Path::new("")).is_err());
+        assert!(save_own_server(&dir, "203.0.113.11", "root", &key.with_extension("pub")).is_err());
+        let encrypted = dir.join("encrypted");
+        fs::copy(&key, &encrypted).unwrap();
+        let locked = Command::new("ssh-keygen")
+            .args([
+                "-p",
+                "-f",
+                &encrypted.to_string_lossy(),
+                "-P",
+                "",
+                "-N",
+                "secret",
+            ])
+            .status()
+            .unwrap();
+        assert!(locked.success());
+        assert!(save_own_server(&dir, "203.0.113.11", "root", &encrypted).is_err());
+
+        let mut config = ensure_config(&dir).unwrap();
+        config.resend_api_key = "re_test".into();
+        config.admin_email = "owner@example.com".into();
+        config.from_email = "notes@example.com".into();
+        assert!(deploy_blockers(&config).is_ok());
+        config.digital_ocean_token.clear();
+        assert!(deploy_blockers(&config).is_ok());
+        let mut digitalocean = DeploymentConfig::default();
+        digitalocean.resend_api_key = "re_test".into();
+        digitalocean.admin_email = "owner@example.com".into();
+        digitalocean.from_email = "notes@example.com".into();
+        digitalocean.region = "nyc3".into();
+        assert!(deploy_blockers(&digitalocean).is_err());
+
+        assert_eq!(
+            ssh_destination("ubuntu", "203.0.113.10").unwrap(),
+            "ubuntu@203.0.113.10"
+        );
+        assert_eq!(ssh_destination("root", "::1").unwrap(), "root@[::1]");
+        assert!(ssh_destination("root;id", "203.0.113.10").is_err());
+        assert_eq!(remote_command("root", "echo 'hi'"), "echo 'hi'");
+        assert_eq!(
+            remote_command("ubuntu", "echo 'hi'"),
+            "sudo -n bash -c 'echo '\\''hi'\\'''"
+        );
+        let sudo = plain_failure("Remote command failed: sudo: a password is required");
+        assert!(sudo.contains("without a password"));
+        assert!(!sudo.contains("sudo:"));
+
+        config.droplet_id = 9;
+        write_config(&config_path(&dir), &config).unwrap();
+        assert!(save_host(&dir, "digitalocean").is_err());
+        config.droplet_id = 0;
+        config.installed = true;
+        config.encryption_key = "kept-key".into();
+        write_config(&config_path(&dir), &config).unwrap();
+        assert!(save_host(&dir, "digitalocean").is_err());
+        let forgotten = delete_droplet(&dir).unwrap();
+        assert!(forgotten.public_ip.is_empty());
+        assert!(forgotten.ssh_private_key.is_empty());
+        assert!(!forgotten.installed);
+        assert_eq!(forgotten.encryption_key, "kept-key");
+        assert_eq!(forgotten.host, "server");
+        let switched = save_host(&dir, "digitalocean").unwrap();
+        assert_eq!(switched.host, "digitalocean");
         let _ = fs::remove_dir_all(&dir);
     }
 

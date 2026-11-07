@@ -31,7 +31,6 @@ struct Shell {
     shared: Arc<Mutex<Session>>,
     server: ServerHandle,
     data_dir: PathBuf,
-    setup_url: String,
     app_url: Mutex<String>,
     mcp_url: Mutex<String>,
     mcp_token: Mutex<String>,
@@ -75,11 +74,7 @@ fn requested_ui() -> Option<(PathBuf, String)> {
 }
 
 impl Shell {
-    fn start(
-        data_dir: PathBuf,
-        setup_url: String,
-        requested: Option<(PathBuf, String)>,
-    ) -> Result<Shell, String> {
+    fn start(data_dir: PathBuf, requested: Option<(PathBuf, String)>) -> Result<Shell, String> {
         std::fs::create_dir_all(&data_dir)
             .map_err(|err| format!("Could not create the app data folder: {err}"))?;
         deploy::ensure_config(&data_dir)?;
@@ -96,7 +91,6 @@ impl Shell {
             server,
             app_url: Mutex::new(remembered_app_url(&data_dir).unwrap_or_default()),
             data_dir,
-            setup_url,
             mcp_url: Mutex::new(String::new()),
             mcp_token: Mutex::new(String::new()),
             deploy_status: Arc::new(Mutex::new(String::new())),
@@ -348,6 +342,35 @@ fn save_deployment(
 }
 
 #[tauri::command]
+fn save_host(shell: tauri::State<Shell>, host: String) -> Result<DeploymentView, String> {
+    journal::logged_plain(
+        "where the app runs",
+        deploy::save_host(&shell.data_dir, &host),
+    )?;
+    journal::logged("read setup", shell.deployment_view())
+}
+
+#[tauri::command]
+fn save_own_server(
+    shell: tauri::State<Shell>,
+    ip: String,
+    user: String,
+    key_path: String,
+) -> Result<DeploymentView, String> {
+    journal::logged_plain(
+        "your computer",
+        deploy::save_own_server(&shell.data_dir, &ip, &user, Path::new(&key_path)),
+    )?;
+    journal::logged("read setup", shell.deployment_view())
+}
+
+#[tauri::command]
+fn clear_own_server(shell: tauri::State<Shell>) -> Result<DeploymentView, String> {
+    journal::logged_plain("your computer", deploy::clear_own_server(&shell.data_dir))?;
+    journal::logged("read setup", shell.deployment_view())
+}
+
+#[tauri::command]
 fn save_domain(shell: tauri::State<Shell>, domain: String) -> Result<DeploymentView, String> {
     journal::logged_plain("save domain", deploy::save_domain(&shell.data_dir, &domain))?;
     journal::logged("read setup", shell.deployment_view())
@@ -365,19 +388,10 @@ fn droplet_regions(shell: tauri::State<Shell>) -> Result<Vec<deploy::RegionChoic
 }
 
 #[tauri::command]
-async fn open_in_app(
-    app: AppHandle,
-    shell: State<'_, Shell>,
-    host: State<'_, TerminalHost>,
-    url: String,
-) -> Result<(), String> {
+fn open_in_app(shell: State<'_, Shell>, url: String) -> Result<(), String> {
     let url = journal::logged("open page", public_app_url(&url))?;
     journal::logged("open page", shell.remember_opened_url(&url))?;
-    let opened = journal::logged("open page", browser::show(&app, &url, &shell.setup_url));
-    if opened.is_ok() {
-        host.note_app_url(&url);
-    }
-    opened
+    journal::logged("open page", open_in_browser(&url))
 }
 
 #[tauri::command]
@@ -409,8 +423,8 @@ fn external_page_allowed(url: &str) -> bool {
 
 fn browser_command(url: &str) -> Command {
     if cfg!(windows) {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", url]);
+        let mut command = Command::new("rundll32");
+        command.args(["url.dll,FileProtocolHandler", url]);
         command
     } else if cfg!(target_os = "macos") {
         let mut command = Command::new("open");
@@ -423,6 +437,17 @@ fn browser_command(url: &str) -> Command {
     }
 }
 
+fn open_in_browser(url: &str) -> Result<(), String> {
+    let status = browser_command(url)
+        .status()
+        .map_err(|err| format!("Could not open the page: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Could not open the page.".into())
+    }
+}
+
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     if !external_page_allowed(&url) {
@@ -431,17 +456,7 @@ fn open_external(url: String) -> Result<(), String> {
             Err("That page cannot be opened from the shell.".into()),
         );
     }
-    let status = browser_command(&url)
-        .status()
-        .map_err(|err| format!("Could not open the page: {err}"));
-    journal::logged(
-        "open page",
-        match status {
-            Ok(status) if status.success() => Ok(()),
-            Ok(_) => Err("Could not open the page.".into()),
-            Err(err) => Err(err),
-        },
-    )
+    journal::logged("open page", open_in_browser(&url))
 }
 
 #[tauri::command]
@@ -691,7 +706,7 @@ pub fn run() {
             let setup_url = window.url().map_err(std::io::Error::other)?.to_string();
             let data_dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
             journal::install(&data_dir);
-            let shell = Shell::start(data_dir.clone(), setup_url.clone(), requested_ui()).map_err(
+            let shell = Shell::start(data_dir.clone(), requested_ui()).map_err(
                 |err| {
                     journal::write("start", &err);
                     std::io::Error::new(std::io::ErrorKind::Other, err)
@@ -740,6 +755,9 @@ pub fn run() {
             available_versions,
             app_update,
             save_deployment,
+            save_host,
+            save_own_server,
+            clear_own_server,
             save_domain,
             start_https,
             check_token,
@@ -792,7 +810,9 @@ mod tests {
 
     #[test]
     fn the_download_page_can_be_opened_and_other_pages_cannot() {
-        assert!(super::external_page_allowed(super::app_update::DOWNLOAD_MAC_URL));
+        assert!(super::external_page_allowed(
+            super::app_update::DOWNLOAD_MAC_URL
+        ));
         assert!(super::external_page_allowed(
             super::app_update::DOWNLOAD_WINDOWS_URL
         ));

@@ -139,12 +139,6 @@ impl TerminalHost {
             .map_err(|err| format!("Could not write to the terminal: {err}"))
     }
 
-    pub fn note_app_url(&self, url: &str) {
-        if let Err(err) = self.context.note_app_url(url) {
-            crate::journal::write("terminal", &err);
-        }
-    }
-
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
         let slot = self
             .session

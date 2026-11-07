@@ -191,6 +191,44 @@ select:focus-visible {
   background: #fef3c7;
 }
 
+.error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin: 0.85rem 0 0;
+  padding: 0.75rem 0.7rem 0.75rem 0.9rem;
+  border: 1px solid #fecaca;
+  border-radius: 0.75rem;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.error-banner p {
+  flex: 1;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.banner-close {
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.banner-close:hover {
+  background: #fee2e2;
+}
+
 #buho-update {
   margin-top: 1.25rem;
 }
@@ -201,6 +239,45 @@ select:focus-visible {
 
 #buho-update .actions {
   margin-top: 0.75rem;
+}
+
+.choices {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.choice {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  margin: 0;
+  cursor: pointer;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--color-base-300);
+  border-radius: 0.75rem;
+  font-weight: 400;
+  color: var(--color-base-700);
+}
+
+.choice:has(input:checked) {
+  border-color: var(--color-primary);
+  background: #eff6ff;
+}
+
+.choice:has(input:disabled) {
+  cursor: default;
+}
+
+.choice input {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.2rem;
+}
+
+.choice strong {
+  display: block;
+  font-weight: 800;
+  color: var(--color-base-800);
 }
 
 .hint,
@@ -263,6 +340,12 @@ select:focus-visible {
   color: var(--color-error);
   font-size: 0.88rem;
   font-weight: 700;
+}
+
+.error:empty,
+#deploy-status:empty,
+#domain-status:empty {
+  display: none;
 }
 
 .actions {

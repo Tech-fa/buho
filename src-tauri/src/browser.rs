@@ -2,14 +2,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
-use tauri::webview::NewWindowResponse;
-use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Position, Rect, Size, WebviewBuilder,
-    WebviewUrl, WindowBuilder, WindowEvent,
-};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Position, Rect, Size};
 
 use crate::control::PAGE_WEBVIEW;
-use crate::terminal::{TERMINAL_WEBVIEW, terminal_page};
+use crate::terminal::TERMINAL_WEBVIEW;
 
 /// Window that holds the previewed page and the terminal. This label is not in the
 /// capability list, so the page webview inside it cannot call shell commands.
@@ -139,34 +135,6 @@ pub fn dock_split(
     }
 }
 
-pub fn show(app: &AppHandle, url: &str, setup_url: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(url)
-        .map_err(|_| "Enter a full URL, like https://app.example.com.".to_string())?;
-    let existing = app.get_webview(PAGE_WEBVIEW).is_some();
-    if !existing {
-        create_preview(app, &parsed, setup_url)?;
-    } else if app.get_webview(TERMINAL_WEBVIEW).is_none() {
-        let page = app
-            .get_webview(PAGE_WEBVIEW)
-            .ok_or_else(|| "Open a page first.".to_string())?;
-        attach_terminal(&page.window(), setup_url)?;
-    }
-    let page = app
-        .get_webview(PAGE_WEBVIEW)
-        .ok_or_else(|| "Open a page first.".to_string())?;
-    if existing {
-        page.navigate(parsed)
-            .map_err(|err| format!("Could not open the page: {err}"))?;
-    }
-    let window = page.window();
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_focus();
-    apply(app)?;
-    let _ = page.set_focus();
-    Ok(())
-}
-
 pub fn set_height(
     app: &AppHandle,
     height: f64,
@@ -264,69 +232,6 @@ fn pane_rect(pane: Pane) -> Rect {
         position: Position::Logical(LogicalPosition::new(pane.x, pane.y)),
         size: Size::Logical(LogicalSize::new(pane.width.max(1.0), pane.height.max(1.0))),
     }
-}
-
-fn create_preview(app: &AppHandle, url: &url::Url, setup_url: &str) -> Result<(), String> {
-    let window = WindowBuilder::new(app, PREVIEW_WINDOW)
-        .title(url.host_str().unwrap_or("Page"))
-        .inner_size(PREVIEW_WIDTH, PREVIEW_HEIGHT)
-        .min_inner_size(480.0, 320.0)
-        .build()
-        .map_err(|err| format!("Could not open the page: {err}"))?;
-    let handle = app.clone();
-    window
-        .add_child(
-            WebviewBuilder::new(PAGE_WEBVIEW, WebviewUrl::External(url.clone()))
-                .focused(true)
-                .on_document_title_changed(|webview, title| {
-                    if !title.trim().is_empty() {
-                        let _ = webview.window().set_title(&title);
-                    }
-                })
-                .on_navigation(|next| {
-                    let allowed = next.scheme() == "http"
-                        || next.scheme() == "https"
-                        || next.as_str() == "about:blank";
-                    if !allowed {
-                        crate::journal::write("open page", &format!("blocked {next}"));
-                    }
-                    allowed
-                })
-                .on_new_window(move |next, _features| {
-                    if matches!(next.scheme(), "http" | "https") {
-                        if let Some(page) = handle.get_webview(PAGE_WEBVIEW) {
-                            let _ = page.navigate(next);
-                        }
-                    }
-                    NewWindowResponse::Deny
-                }),
-            LogicalPosition::new(0.0, 0.0),
-            LogicalSize::new(PREVIEW_WIDTH, PREVIEW_HEIGHT - TERMINAL_BAR),
-        )
-        .map_err(|err| format!("Could not open the page: {err}"))?;
-    attach_terminal(&window, setup_url)?;
-    let resized = app.clone();
-    window.on_window_event(move |event| {
-        if let WindowEvent::Resized(_) = event {
-            let _ = apply(&resized);
-        }
-    });
-    Ok(())
-}
-
-fn attach_terminal(window: &tauri::Window, setup_url: &str) -> Result<(), String> {
-    let url = terminal_page(setup_url)?;
-    window
-        .add_child(
-            WebviewBuilder::new(TERMINAL_WEBVIEW, WebviewUrl::External(url))
-                .focused(false)
-                .transparent(true)
-                .enable_clipboard_access(),
-            LogicalPosition::new(0.0, PREVIEW_HEIGHT - TERMINAL_BAR),
-            LogicalSize::new(PREVIEW_WIDTH, TERMINAL_BAR),
-        )
-        .map_err(|err| format!("Could not open the terminal: {err}"))?;
-    Ok(())
 }
 
 #[cfg(test)]
