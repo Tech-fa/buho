@@ -322,12 +322,23 @@
             <div class="tab-row agent-tab-row">
               <div class="tab-strip" id="agent-tabs"></div>
               <button type="button" id="agent-history-toggle" aria-expanded="false" title="Chat history">History</button>
+              <button type="button" id="llm-key-toggle" aria-expanded="false" title="buho_llm token">buho_llm</button>
               <button type="button" id="new-agent-tab" aria-label="New chat" title="New chat">+</button>
               <button type="button" id="collapse-agents" aria-label="Collapse agents" title="Collapse agents" aria-expanded="true">
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5 11 8l-5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
             </div>
             <div id="agent-history" class="agent-history" hidden></div>
+            <form id="llm-key" class="llm-key" hidden>
+              <label for="llm-key-input">buho_llm</label>
+              <p id="llm-key-help">Paste your buho_llm token. It stays on this computer.</p>
+              <input id="llm-key-input" type="password" spellcheck="false" autocomplete="off" autocapitalize="off" />
+              <div class="actions">
+                <button class="primary" type="submit">Save token</button>
+                <button id="llm-key-remove" type="button" hidden>Remove</button>
+              </div>
+              <p id="llm-key-error" class="error" role="alert"></p>
+            </form>
             <div id="agent-panes"></div>
           </section>
         </div>

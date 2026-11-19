@@ -104,9 +104,9 @@ impl TerminalHost {
                 .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             {
-                if let Err(err) = self
-                    .context
-                    .publish(&home, generation, &place_from_env(&extra_env))
+                if let Err(err) =
+                    self.context
+                        .publish(&home, generation, &place_from_env(&extra_env))
                 {
                     crate::journal::write("terminal", &err);
                 }

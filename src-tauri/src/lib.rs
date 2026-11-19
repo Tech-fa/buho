@@ -10,6 +10,7 @@ mod harness;
 mod host;
 mod http_gate;
 mod journal;
+mod llm_key;
 mod permissions;
 mod sandbox;
 mod server;
@@ -672,6 +673,27 @@ fn download_backup(shell: tauri::State<Shell>, destination: String) -> Result<()
 }
 
 #[tauri::command]
+fn save_llm_key(app: AppHandle, shell: tauri::State<Shell>, key: String) -> Result<(), String> {
+    llm_key::save(shell.data_dir(), &key)?;
+    apply_llm_key(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_llm_key(app: AppHandle, shell: tauri::State<Shell>) -> Result<(), String> {
+    llm_key::clear(shell.data_dir())?;
+    apply_llm_key(&app);
+    Ok(())
+}
+
+fn apply_llm_key(app: &AppHandle) {
+    if let Some(harness) = app.try_state::<Arc<harness::Harness>>() {
+        harness.set_key(&llm_key::key());
+    }
+    tabs::publish_state(app);
+}
+
+#[tauri::command]
 fn forget_resource(shell: tauri::State<Shell>, kind: String) -> Result<DeploymentView, String> {
     journal::logged(
         "remove a saved item",
@@ -742,18 +764,16 @@ pub fn run() {
             let setup_url = window.url().map_err(std::io::Error::other)?.to_string();
             let data_dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
             journal::install(&data_dir);
-            let shell = Shell::start(data_dir.clone(), requested_ui()).map_err(
-                |err| {
+            llm_key::install(&data_dir);
+            let shell = Shell::start(data_dir.clone(), requested_ui()).map_err(|err| {
+                journal::write("start", &err);
+                std::io::Error::new(std::io::ErrorKind::Other, err)
+            })?;
+            let control = serve_control(Arc::new(HostExecutor::new(app.handle().clone())))
+                .map_err(|err| {
                     journal::write("start", &err);
                     std::io::Error::new(std::io::ErrorKind::Other, err)
-                },
-            )?;
-            let control = serve_control(Arc::new(HostExecutor::new(app.handle().clone()))).map_err(
-                |err| {
-                    journal::write("start", &err);
-                    std::io::Error::new(std::io::ErrorKind::Other, err)
-                },
-            )?;
+                })?;
             shell.set_mcp_url(control.mcp_url.clone());
             shell.set_mcp_token(control.token.clone());
             *bridge_for_setup
@@ -831,6 +851,8 @@ pub fn run() {
             chats::agent_transcript,
             harness::agent_send,
             harness::agent_stop,
+            save_llm_key,
+            clear_llm_key,
             permissions::gate_reply
         ])
         .run(tauri::generate_context!())

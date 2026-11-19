@@ -14,8 +14,8 @@ use url::Url;
 
 use crate::control::{bridge_script, is_page_webview};
 use crate::engine::{
-    align_page, enable_gestures, navigation_allowed, page_url_from_engine, parse_history_action,
-    read_history_buttons, run_history, typed_address, HistoryAction,
+    HistoryAction, align_page, enable_gestures, navigation_allowed, page_url_from_engine,
+    parse_history_action, read_history_buttons, run_history, typed_address,
 };
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -445,9 +445,11 @@ pub fn public_http_url(value: &str) -> Result<String, String> {
 }
 
 pub fn llm_key_set() -> bool {
-    std::env::var("BUHO_LLM_KEY")
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
+    crate::llm_key::is_set()
+}
+
+pub(crate) fn publish_state(app: &AppHandle) {
+    emit_state(app);
 }
 
 pub struct Workspace {
@@ -523,13 +525,7 @@ fn place_page(webview: &Webview, bounds: Bounds) {
             bounds.height.max(1.0),
         )),
     });
-    align_page(
-        webview,
-        bounds.x,
-        bounds.y,
-        bounds.width,
-        bounds.height,
-    );
+    align_page(webview, bounds.x, bounds.y, bounds.width, bounds.height);
 }
 
 fn attach_page(app: &AppHandle, tab: &BrowserTab, bounds: Bounds) -> Result<(), String> {
@@ -555,9 +551,9 @@ fn attach_page(app: &AppHandle, tab: &BrowserTab, bounds: Bounds) -> Result<(), 
             }
             let id = nav_id.clone();
             let href = url.to_string();
-            let changed = nav_handle.state::<Arc<Workspace>>().with(|manager| {
-                manager.apply_engine(&id, Some(&href), None, None, None, None)
-            });
+            let changed = nav_handle
+                .state::<Arc<Workspace>>()
+                .with(|manager| manager.apply_engine(&id, Some(&href), None, None, None, None));
             if changed {
                 emit_state(&nav_handle);
             }
@@ -626,14 +622,7 @@ fn pull_history(app: &AppHandle, webview: &Webview, tab_id: &str) {
         .and_then(|href| page_url_from_engine(&href));
     read_history_buttons(webview, move |back, forward| {
         let changed = handle.state::<Arc<Workspace>>().with(|manager| {
-            manager.apply_engine(
-                &id,
-                url.as_deref(),
-                None,
-                None,
-                Some(back),
-                Some(forward),
-            )
+            manager.apply_engine(&id, url.as_deref(), None, None, Some(back), Some(forward))
         });
         if changed {
             emit_state(&handle);
@@ -851,11 +840,7 @@ pub fn workspace_history(app: AppHandle, direction: String) -> Result<(), String
     let action = parse_history_action(&direction)?;
     let workspace = app.state::<Arc<Workspace>>();
     let (id, loading) = workspace
-        .with(|manager| {
-            manager
-                .focused()
-                .map(|tab| (tab.id.clone(), tab.loading))
-        })
+        .with(|manager| manager.focused().map(|tab| (tab.id.clone(), tab.loading)))
         .ok_or_else(|| "Open a page first.".to_string())?;
     let webview = app
         .get_webview(&id)
@@ -902,7 +887,8 @@ pub fn workspace_close_agent(app: AppHandle, id: String) -> Result<WorkspaceStat
     let workspace = app.state::<Arc<Workspace>>();
     let tab = workspace.with(|manager| manager.close_agent(&id))?;
     if let Some(shell) = app.try_state::<crate::Shell>() {
-        let _ = crate::chats::set_open(&crate::chats::dir(shell.data_dir()), &tab.session_id, false);
+        let _ =
+            crate::chats::set_open(&crate::chats::dir(shell.data_dir()), &tab.session_id, false);
     }
     emit_state(&app);
     Ok(workspace.snapshot())
@@ -1105,11 +1091,7 @@ fn parse_offer(value: &Value) -> Option<McpOffer> {
         .to_string();
     let url = public_http_url(value.get("url").and_then(Value::as_str)?.trim()).ok()?;
     Some(McpOffer {
-        name: if name.is_empty() {
-            "app".into()
-        } else {
-            name
-        },
+        name: if name.is_empty() { "app".into() } else { name },
         url,
     })
 }
@@ -1185,7 +1167,9 @@ mod tests {
     #[test]
     fn agents_bind_to_the_focused_page() {
         let mut manager = TabManager::default();
-        manager.open("https://example.com", Some("fourss-default".into())).unwrap();
+        manager
+            .open("https://example.com", Some("fourss-default".into()))
+            .unwrap();
         let agent = manager.new_agent();
         assert_eq!(agent.bound_tab_ids, vec!["page-1".to_string()]);
         assert_eq!(
@@ -1285,7 +1269,10 @@ mod tests {
         assert!(tab.can_go_back);
         assert!(!tab.can_go_forward);
         assert!(!manager.apply_engine("page-1", Some("about:blank"), Some(""), None, None, None));
-        assert_eq!(manager.focused().unwrap().url, "https://example.com/app/settings");
+        assert_eq!(
+            manager.focused().unwrap().url,
+            "https://example.com/app/settings"
+        );
         assert_eq!(manager.focused().unwrap().title, "Settings");
     }
 

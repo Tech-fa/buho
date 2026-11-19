@@ -111,13 +111,7 @@ pub fn view_top_inset(parent_height: f64, origin_y: f64, height: f64, flipped: b
 }
 
 /// Origin y for a page whose top sits `dom_y + main_top` points below the parent top.
-pub fn page_origin_y(
-    dom_y: f64,
-    page_h: f64,
-    parent_h: f64,
-    main_top: f64,
-    flipped: bool,
-) -> f64 {
+pub fn page_origin_y(dom_y: f64, page_h: f64, parent_h: f64, main_top: f64, flipped: bool) -> f64 {
     let top = dom_y + main_top;
     if flipped {
         top
@@ -388,7 +382,11 @@ mod tests {
             typed_address("example.com/path").unwrap(),
             "https://example.com/path"
         );
-        assert!(typed_address("https://example.com").unwrap().starts_with("https://example.com"));
+        assert!(
+            typed_address("https://example.com")
+                .unwrap()
+                .starts_with("https://example.com")
+        );
         assert!(typed_address("").is_err());
         assert!(typed_address("javascript:alert(1)").is_err());
         assert!(typed_address("file:///tmp/x").is_err());
@@ -397,8 +395,16 @@ mod tests {
 
     #[test]
     fn typed_address_keeps_loopback_on_http() {
-        assert!(typed_address("localhost:8080").unwrap().starts_with("http://localhost:8080"));
-        assert!(typed_address("127.0.0.1").unwrap().starts_with("http://127.0.0.1"));
+        assert!(
+            typed_address("localhost:8080")
+                .unwrap()
+                .starts_with("http://localhost:8080")
+        );
+        assert!(
+            typed_address("127.0.0.1")
+                .unwrap()
+                .starts_with("http://127.0.0.1")
+        );
     }
 
     #[test]
@@ -409,9 +415,13 @@ mod tests {
         );
         assert_eq!(page_url_from_engine("about:blank"), None);
         assert_eq!(page_url_from_engine("file:///tmp"), None);
-        assert!(navigation_allowed(&Url::parse("https://a.example").unwrap()));
+        assert!(navigation_allowed(
+            &Url::parse("https://a.example").unwrap()
+        ));
         assert!(navigation_allowed(&Url::parse("about:blank").unwrap()));
-        assert!(!navigation_allowed(&Url::parse("javascript:alert(1)").unwrap()));
+        assert!(!navigation_allowed(
+            &Url::parse("javascript:alert(1)").unwrap()
+        ));
     }
 
     #[test]
@@ -462,7 +472,10 @@ mod tests {
     #[test]
     fn history_actions_map_to_engine_commands() {
         assert_eq!(parse_history_action("back").unwrap(), HistoryAction::Back);
-        assert_eq!(parse_history_action("reload").unwrap(), HistoryAction::Reload);
+        assert_eq!(
+            parse_history_action("reload").unwrap(),
+            HistoryAction::Reload
+        );
         assert_eq!(parse_history_action("stop").unwrap(), HistoryAction::Stop);
         assert!(parse_history_action("home").is_err());
     }

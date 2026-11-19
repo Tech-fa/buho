@@ -4,8 +4,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { logError } from "../log";
 import type { AgentEvent, AgentTab } from "../contracts/events";
 
-type Provider = "auto" | "anthropic" | "openai" | "deepseek";
-
 type StoredPart = {
   type?: string;
   text?: string;
@@ -20,8 +18,6 @@ type StoredMessage = {
 };
 
 type ChatFile = {
-  provider?: string;
-  model?: string;
   messages?: StoredMessage[];
 };
 
@@ -42,7 +38,6 @@ type Pane = {
   composer: HTMLTextAreaElement;
   send: HTMLButtonElement;
   attach: HTMLButtonElement;
-  provider: HTMLSelectElement;
   files: string[];
   fileRow: HTMLElement;
   gate: HTMLElement;
@@ -52,20 +47,55 @@ type Pane = {
   pending: AgentEvent[];
 };
 
-const PROVIDER_KEY = "buho-llm-provider";
+const LLM_LABEL = "buho_llm";
 
 const panes = new Map<string, Pane>();
 let activeId = "";
 let llmKeySet = false;
+let llmKeyKnown = false;
+let llmEditorOpen = false;
 
 export function setLlmKeySet(value: boolean): void {
   llmKeySet = value;
-  for (const pane of panes.values()) {
-    const banner = pane.root.querySelector(".key-missing") as HTMLElement | null;
-    if (banner && !banner.dataset.forced) {
-      banner.hidden = value;
-    }
+  llmKeyKnown = true;
+  paintLlmForm();
+}
+
+function paintLlmForm(): void {
+  const form = document.querySelector("#llm-key") as HTMLFormElement | null;
+  const toggle = document.querySelector("#llm-key-toggle") as HTMLButtonElement | null;
+  const help = document.querySelector("#llm-key-help") as HTMLParagraphElement | null;
+  const remove = document.querySelector("#llm-key-remove") as HTMLButtonElement | null;
+  const open = llmEditorOpen || (llmKeyKnown && !llmKeySet);
+  if (form) {
+    form.hidden = !open;
   }
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if (help) {
+    help.textContent = llmKeySet
+      ? "Paste a new buho_llm token. It replaces the one saved on this computer."
+      : "Paste your buho_llm token. It stays on this computer.";
+  }
+  if (remove) {
+    remove.hidden = !llmKeySet;
+  }
+}
+
+function llmError(message: string): void {
+  const error = document.querySelector("#llm-key-error") as HTMLParagraphElement | null;
+  if (error) {
+    error.textContent = message;
+  }
+}
+
+function openLlmForm(message = ""): void {
+  llmEditorOpen = true;
+  llmError(message);
+  paintLlmForm();
+  const input = document.querySelector("#llm-key-input") as HTMLInputElement | null;
+  input?.focus();
 }
 
 function bubble(kind: string, text: string): HTMLParagraphElement {
@@ -113,11 +143,6 @@ function closeThinking(pane: Pane): void {
 function append(pane: Pane, node: HTMLElement): void {
   pane.transcript.append(node);
   pane.transcript.scrollTop = pane.transcript.scrollHeight;
-}
-
-function savedProvider(): Provider {
-  const value = localStorage.getItem(PROVIDER_KEY);
-  return value === "anthropic" || value === "openai" || value === "deepseek" ? value : "auto";
 }
 
 function fileName(path: string): string {
@@ -173,7 +198,6 @@ function setRunning(pane: Pane, running: boolean): void {
   pane.running = running;
   pane.composer.disabled = running;
   pane.attach.disabled = running;
-  pane.provider.disabled = running;
   refreshSend(pane);
   if (pane.watch !== null) {
     window.clearTimeout(pane.watch);
@@ -269,10 +293,6 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
   const root = document.createElement("div");
   root.className = "agent-pane";
   root.dataset.agentId = tab.id;
-  const missing = document.createElement("p");
-  missing.className = "key-missing";
-  missing.hidden = llmKeySet;
-  missing.textContent = "Set BUHO_LLM_KEY to talk to the model.";
   const transcript = document.createElement("div");
   transcript.className = "transcript";
   const gate = document.createElement("div");
@@ -291,12 +311,6 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
   attach.title = "Attach file";
   attach.innerHTML =
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.1 11.6 11 6.7a2.1 2.1 0 0 0-3-3L3.4 8.4a3.2 3.2 0 0 0 4.5 4.5l5.1-5.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
-  const provider = document.createElement("select");
-  provider.className = "composer-provider";
-  provider.setAttribute("aria-label", "Model");
-  provider.innerHTML =
-    '<option value="auto">Auto</option><option value="anthropic">Claude</option><option value="openai">GPT-4o</option><option value="deepseek">DeepSeek</option>';
-  provider.value = savedProvider();
   const send = document.createElement("button");
   send.type = "button";
   send.className = "composer-send";
@@ -305,11 +319,11 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
     '<svg class="icon-send" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.2V3.8M4.6 7.2 8 3.8l3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><svg class="icon-stop" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="6" rx="1" fill="currentColor"/></svg>';
   const bar = document.createElement("div");
   bar.className = "composer-bar";
-  bar.append(attach, provider, send);
+  bar.append(attach, send);
   const row = document.createElement("div");
   row.className = "composer";
   row.append(fileRow, composer, bar);
-  root.append(missing, transcript, gate, row);
+  root.append(transcript, gate, row);
   host.append(root);
   const pane: Pane = {
     tab,
@@ -318,7 +332,6 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
     composer,
     send,
     attach,
-    provider,
     files: [],
     fileRow,
     gate,
@@ -329,16 +342,6 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
   };
   refreshSend(pane);
   attach.addEventListener("click", () => void attachFiles(pane));
-  provider.addEventListener("change", () => {
-    const choice =
-      provider.value === "anthropic" || provider.value === "openai" || provider.value === "deepseek"
-        ? provider.value
-        : "auto";
-    localStorage.setItem(PROVIDER_KEY, choice);
-    for (const other of panes.values()) {
-      other.provider.value = choice;
-    }
-  });
   send.addEventListener("click", () => {
     if (pane.running) {
       void invoke("agent_stop", { sessionId: pane.tab.sessionId }).catch((error: unknown) => {
@@ -393,17 +396,13 @@ async function submit(pane: Pane): Promise<void> {
   append(pane, bubble("user", text));
   setRunning(pane, true);
   try {
-    const outcome = await invoke<{ ok: boolean; message?: string }>("agent_send", {
+    const outcome = await invoke<{ ok: boolean; message?: string; needsKey?: boolean }>("agent_send", {
       sessionId: pane.tab.sessionId,
       text,
-      provider: pane.provider.value,
     });
     if (outcome && outcome.ok === false) {
-      const banner = pane.root.querySelector(".key-missing") as HTMLElement | null;
-      if (banner && outcome.message) {
-        banner.hidden = false;
-        banner.dataset.forced = "1";
-        banner.textContent = outcome.message;
+      if (outcome.needsKey) {
+        openLlmForm(outcome.message || "Paste a buho_llm token to talk to the model.");
       }
       if (outcome.message) {
         append(pane, bubble("assistant", outcome.message));
@@ -415,13 +414,6 @@ async function submit(pane: Pane): Promise<void> {
     append(pane, bubble("assistant", String(error)));
     setRunning(pane, false);
   }
-}
-
-function providerLabel(provider: string): string {
-  if (provider === "anthropic") return "Claude";
-  if (provider === "openai") return "GPT-4o";
-  if (provider === "deepseek") return "DeepSeek";
-  return "Auto";
 }
 
 function paintStored(pane: Pane, messages: StoredMessage[]): void {
@@ -472,14 +464,6 @@ function hasText(pane: Pane, kind: string, text: string): boolean {
 async function loadTranscript(pane: Pane): Promise<void> {
   try {
     const chat = await invoke<ChatFile>("agent_transcript", { sessionId: pane.tab.sessionId });
-    if (
-      chat.provider === "anthropic" ||
-      chat.provider === "openai" ||
-      chat.provider === "deepseek" ||
-      chat.provider === "auto"
-    ) {
-      pane.provider.value = chat.provider;
-    }
     if (pane.transcript.childElementCount === 0) {
       paintStored(pane, chat.messages ?? []);
     }
@@ -514,8 +498,8 @@ async function paintHistory(): Promise<void> {
       const title = document.createElement("span");
       title.textContent = chat.title || "New chat";
       const meta = document.createElement("small");
-      meta.textContent = providerLabel(chat.provider);
-      button.title = chat.model ? `${providerLabel(chat.provider)} · ${chat.model}` : providerLabel(chat.provider);
+      meta.textContent = LLM_LABEL;
+      button.title = LLM_LABEL;
       button.append(title, meta);
       button.addEventListener("click", () => {
         void invoke("workspace_open_chat", { sessionId: chat.sessionId }).catch((error: unknown) => {
@@ -606,6 +590,61 @@ function showEvent(pane: Pane, event: AgentEvent): void {
 export function bootAgentUi(): void {
   const history = document.querySelector("#agent-history") as HTMLElement | null;
   const toggle = document.querySelector("#agent-history-toggle") as HTMLButtonElement | null;
+  const keyToggle = document.querySelector("#llm-key-toggle") as HTMLButtonElement | null;
+  const keyForm = document.querySelector("#llm-key") as HTMLFormElement | null;
+  const keyInput = document.querySelector("#llm-key-input") as HTMLInputElement | null;
+  const keyRemove = document.querySelector("#llm-key-remove") as HTMLButtonElement | null;
+  keyToggle?.addEventListener("click", () => {
+    if (!llmKeySet) {
+      openLlmForm();
+      return;
+    }
+    llmEditorOpen = !llmEditorOpen;
+    if (llmEditorOpen) {
+      llmError("");
+    }
+    paintLlmForm();
+    if (llmEditorOpen) {
+      keyInput?.focus();
+    }
+  });
+  keyForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const token = keyInput?.value.trim() ?? "";
+    if (!token) {
+      llmError("Paste the buho_llm token.");
+      return;
+    }
+    llmError("");
+    void invoke("save_llm_key", { key: token })
+      .then(() => {
+        if (keyInput) {
+          keyInput.value = "";
+        }
+        llmEditorOpen = false;
+        setLlmKeySet(true);
+      })
+      .catch((error: unknown) => {
+        logError("buho_llm", error);
+        llmError(String(error));
+      });
+  });
+  keyRemove?.addEventListener("click", () => {
+    llmError("");
+    void invoke("clear_llm_key")
+      .then(() => {
+        if (keyInput) {
+          keyInput.value = "";
+        }
+        llmEditorOpen = true;
+        setLlmKeySet(false);
+      })
+      .catch((error: unknown) => {
+        logError("buho_llm", error);
+        llmError(String(error));
+      });
+  });
+  paintLlmForm();
   toggle?.addEventListener("click", () => {
     if (!history) {
       return;

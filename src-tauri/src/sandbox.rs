@@ -79,9 +79,7 @@ pub fn run(code: &str, origins: &[String]) -> Result<Value, String> {
 
 fn kill_process(pid: u32) {
     #[cfg(unix)]
-    let _ = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status();
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
     #[cfg(windows)]
     let _ = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/F"])

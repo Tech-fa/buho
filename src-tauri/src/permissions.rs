@@ -57,7 +57,13 @@ impl PermissionGate {
                     Decision::Ask
                 }
             }
-            other if other.starts_with("mcp.") || other.contains('.') && !other.starts_with("browser.") && !other.starts_with("tabs.") && !other.starts_with("http.") => {
+            other
+                if other.starts_with("mcp.")
+                    || other.contains('.')
+                        && !other.starts_with("browser.")
+                        && !other.starts_with("tabs.")
+                        && !other.starts_with("http.") =>
+            {
                 Decision::Ask
             }
             "browser.navigate" | "browser.click" | "browser.type" | "browser.fill"
@@ -94,13 +100,7 @@ impl PermissionGate {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
     }
 
-    pub fn ask(
-        &self,
-        app: &AppHandle,
-        session_id: &str,
-        name: &str,
-        arguments: &Value,
-    ) -> bool {
+    pub fn ask(&self, app: &AppHandle, session_id: &str, name: &str, arguments: &Value) -> bool {
         let id = {
             let mut next = self
                 .next
@@ -178,13 +178,19 @@ mod tests {
 
     #[test]
     fn snapshot_and_list_are_automatic() {
-        assert_eq!(PermissionGate::decide("browser.snapshot", false), Decision::Allow);
+        assert_eq!(
+            PermissionGate::decide("browser.snapshot", false),
+            Decision::Allow
+        );
         assert_eq!(PermissionGate::decide("tabs.list", false), Decision::Allow);
     }
 
     #[test]
     fn navigate_and_click_ask() {
-        assert_eq!(PermissionGate::decide("browser.navigate", true), Decision::Ask);
+        assert_eq!(
+            PermissionGate::decide("browser.navigate", true),
+            Decision::Ask
+        );
         assert_eq!(PermissionGate::decide("browser.click", true), Decision::Ask);
         assert_eq!(PermissionGate::decide("script.run", true), Decision::Ask);
     }
@@ -203,7 +209,10 @@ mod tests {
 
     #[test]
     fn http_asks_off_the_allowlist() {
-        assert_eq!(PermissionGate::decide("http.request", true), Decision::Allow);
+        assert_eq!(
+            PermissionGate::decide("http.request", true),
+            Decision::Allow
+        );
         assert_eq!(PermissionGate::decide("http.request", false), Decision::Ask);
         assert_eq!(PermissionGate::decide("http.curl", false), Decision::Ask);
     }

@@ -73,6 +73,7 @@ fn redact(detail: &str) -> String {
         "SECRET_KEY",
         "DIGITALOCEAN_TOKEN",
         "DOCKERHUB_TOKEN",
+        "BUHO_LLM_KEY",
     ] {
         text = redact_assignment(&text, key);
     }

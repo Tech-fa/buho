@@ -141,8 +141,8 @@ pub fn parse_curl(command: &str) -> Result<HttpRequest, String> {
                 index += 1;
             }
             "-s" | "--silent" | "-S" | "--show-error" | "-L" | "--location" | "-i"
-            | "--include" | "-I" | "--head" | "-k" | "--insecure" | "-v" | "--verbose"
-            | "-g" | "--globoff" | "--compressed" => {}
+            | "--include" | "-I" | "--head" | "-k" | "--insecure" | "-v" | "--verbose" | "-g"
+            | "--globoff" | "--compressed" => {}
             other if other.starts_with('-') => {}
             other => {
                 if url.is_empty() {
@@ -328,12 +328,10 @@ pub fn request_json(arguments: &Value, origins: &[String]) -> Result<Value, Stri
             headers.push((name.clone(), value));
         }
     }
-    let body = arguments
-        .get("body")
-        .map(|value| match value {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        });
+    let body = arguments.get("body").map(|value| match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    });
     request(
         &HttpRequest {
             method,

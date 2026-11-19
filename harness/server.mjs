@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import readline from "node:readline";
 
-const key = (process.env.BUHO_LLM_KEY || "").trim();
+let llmKey = (process.env.BUHO_LLM_KEY || "").trim();
 const sessions = new Map();
 const mcp = new Map();
 const pendingHost = new Map();
@@ -42,7 +42,7 @@ function sessionOf(id) {
       stop: false,
       abort: null,
       running: false,
-      provider: "auto",
+      provider: "deepseek",
       model: "",
     });
   }
@@ -216,27 +216,14 @@ function publishContext(sessionId) {
   const session = sessionOf(sessionId);
   event(sessionId, "context", {
     messages: session.messages,
-    provider: session.provider || "auto",
+    provider: "deepseek",
     model: session.model || "",
   });
 }
 
-async function anthropic(body, signal) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || `The model returned ${response.status}.`);
-  }
-  return payload;
+function modelName() {
+  const configured = (process.env.BUHO_LLM_MODEL || "").trim();
+  return /^deepseek/i.test(configured) ? configured : "deepseek-flash";
 }
 
 function apiToolNames(tools) {
@@ -258,7 +245,7 @@ function apiToolNames(tools) {
   return { toApi, toOriginal };
 }
 
-async function openai(body, signal, model, options = {}) {
+async function complete(body, signal) {
   const names = apiToolNames(body.tools || []);
   const tools = (body.tools || []).map((tool) => ({
     type: "function",
@@ -269,17 +256,17 @@ async function openai(body, signal, model, options = {}) {
     },
   }));
   const messages = [{ role: "system", content: body.system }, ...toOpenAi(body.messages, names.toApi)];
-  const response = await fetch(options.url || "https://api.openai.com/v1/chat/completions", {
+  const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${key}`,
+      authorization: `Bearer ${llmKey}`,
     },
     body: JSON.stringify({
-      model: model || "gpt-4o",
+      model: modelName(),
       messages,
       tools: tools.length ? tools : undefined,
-      ...options.extra,
+      thinking: { type: "disabled" },
     }),
     signal,
   });
@@ -353,49 +340,6 @@ function fromOpenAi(payload, toOriginal = new Map()) {
   return { content, stop_reason: message.tool_calls?.length ? "tool_use" : "end_turn" };
 }
 
-function usesAnthropic() {
-  return key.startsWith("sk-ant-") || !key.startsWith("sk-");
-}
-
-function resolveProvider(choice) {
-  if (choice === "anthropic" || choice === "openai" || choice === "deepseek") return choice;
-  return usesAnthropic() ? "anthropic" : "openai";
-}
-
-function modelFor(provider) {
-  const configured = process.env.BUHO_LLM_MODEL || "";
-  if (provider === "anthropic") {
-    return /^claude/i.test(configured) ? configured : "claude-sonnet-4-20250514";
-  }
-  if (provider === "deepseek") {
-    return /^deepseek/i.test(configured) ? configured : "deepseek-flash";
-  }
-  return configured && !/^claude|^deepseek/i.test(configured) ? configured : "gpt-4o";
-}
-
-async function complete(body, signal, provider) {
-  const choice = resolveProvider(provider);
-  if (choice === "anthropic") {
-    return anthropic(
-      {
-        model: modelFor(choice),
-        max_tokens: 4096,
-        system: body.system,
-        tools: body.tools,
-        messages: body.messages,
-      },
-      signal,
-    );
-  }
-  if (choice === "deepseek") {
-    return openai(body, signal, modelFor(choice), {
-      url: "https://api.deepseek.com/chat/completions",
-      extra: { thinking: { type: "disabled" } },
-    });
-  }
-  return openai(body, signal, modelFor(choice));
-}
-
 function observationText(ok, result, error) {
   const payload = ok ? result : { error };
   const text = JSON.stringify(payload);
@@ -464,12 +408,8 @@ async function runTurn(message) {
   session.abort = controller;
   const connected = connectedServers(message.tabId);
   const tools = [...hostSchemas(message.hostTools), ...mcpSchemas(connected)];
-  const choice = resolveProvider(message.provider);
-  session.provider =
-    message.provider === "anthropic" || message.provider === "openai" || message.provider === "deepseek"
-      ? message.provider
-      : "auto";
-  session.model = modelFor(choice);
+  session.provider = "deepseek";
+  session.model = modelName();
   if (Array.isArray(message.history)) {
     session.messages = message.history;
   } else {
@@ -485,7 +425,7 @@ async function runTurn(message) {
         tools,
         messages: session.messages,
       };
-      const reply = await complete(body, controller.signal, message.provider);
+      const reply = await complete(body, controller.signal);
       const content = reply.content || [];
       session.messages.push({ role: "assistant", content });
       publishContext(sessionId);
@@ -542,6 +482,10 @@ rl.on("line", (line) => {
   try {
     message = JSON.parse(line);
   } catch {
+    return;
+  }
+  if (message.op === "llm.key") {
+    llmKey = String(message.key || "").trim();
     return;
   }
   if (message.op === "turn") {

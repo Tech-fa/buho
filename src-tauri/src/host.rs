@@ -203,7 +203,11 @@ fn permit(
     if gate.allows(name) {
         return Ok(true);
     }
-    if name.contains('.') && !name.starts_with("browser.") && !name.starts_with("tabs.") && !name.starts_with("http.") && name != "script.run"
+    if name.contains('.')
+        && !name.starts_with("browser.")
+        && !name.starts_with("tabs.")
+        && !name.starts_with("http.")
+        && name != "script.run"
     {
         return Ok(gate.ask(app, session_id, name, arguments));
     }

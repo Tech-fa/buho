@@ -75,7 +75,7 @@ pub fn create(folder: &Path, id: &str, session_id: &str) -> Result<ChatRecord, S
         id: id.to_string(),
         session_id: session_id.to_string(),
         title: "New chat".into(),
-        provider: "auto".into(),
+        provider: "deepseek".into(),
         model: String::new(),
         open: true,
         created_at: now,
@@ -110,7 +110,9 @@ pub fn append_user(
     } else {
         create(folder, id, session_id)?
     };
-    record.messages.push(json!({ "role": "user", "content": text }));
+    record
+        .messages
+        .push(json!({ "role": "user", "content": text }));
     record.provider = provider.to_string();
     record.open = true;
     if record.title == "New chat" {
@@ -232,7 +234,12 @@ fn title_from_messages(messages: &[Value]) -> Option<String> {
 }
 
 fn title_from_text(text: &str) -> Option<String> {
-    let line = text.lines().next()?.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = text
+        .lines()
+        .next()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if line.is_empty() {
         return None;
     }
@@ -272,7 +279,14 @@ mod tests {
     fn a_closed_chat_stays_in_the_history() {
         let folder = scratch();
         create(&folder, "agent-1", "session-1").unwrap();
-        let saved = append_user(&folder, "agent-1", "session-1", "Where is the login page?", "anthropic").unwrap();
+        let saved = append_user(
+            &folder,
+            "agent-1",
+            "session-1",
+            "Where is the login page?",
+            "deepseek",
+        )
+        .unwrap();
         assert_eq!(saved.title, "Where is the login page?");
         assert_eq!(saved.messages.len(), 1);
         set_open(&folder, "session-1", false).unwrap();
@@ -288,7 +302,7 @@ mod tests {
     #[test]
     fn the_saved_context_keeps_the_whole_thread() {
         let folder = scratch();
-        append_user(&folder, "agent-2", "session-2", "Hello", "auto").unwrap();
+        append_user(&folder, "agent-2", "session-2", "Hello", "deepseek").unwrap();
         let messages = vec![
             json!({ "role": "user", "content": "Hello" }),
             json!({
@@ -300,10 +314,17 @@ mod tests {
                 "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "page-1" }]
             }),
         ];
-        let saved = save_context(&folder, "session-2", &messages, "openai", "gpt-4o").unwrap();
+        let saved = save_context(
+            &folder,
+            "session-2",
+            &messages,
+            "deepseek",
+            "deepseek-flash",
+        )
+        .unwrap();
         assert_eq!(saved.messages.len(), 3);
-        assert_eq!(saved.provider, "openai");
-        assert_eq!(saved.model, "gpt-4o");
+        assert_eq!(saved.provider, "deepseek");
+        assert_eq!(saved.model, "deepseek-flash");
         assert_eq!(load(&folder, "session-2").unwrap().messages, messages);
         let _ = fs::remove_dir_all(&folder);
     }

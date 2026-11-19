@@ -63,10 +63,7 @@ impl Harness {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
-                .env(
-                    "BUHO_LLM_KEY",
-                    std::env::var("BUHO_LLM_KEY").unwrap_or_default(),
-                )
+                .env("BUHO_LLM_KEY", crate::llm_key::key())
                 .spawn()
             {
                 Ok(mut child) => {
@@ -148,6 +145,10 @@ impl Harness {
         self.send(&json!({ "op": "stop", "sessionId": session_id }))
     }
 
+    pub fn set_key(&self, key: &str) -> bool {
+        self.send(&json!({ "op": "llm.key", "key": key }))
+    }
+
     pub fn turn(
         &self,
         session_id: &str,
@@ -218,10 +219,6 @@ fn handle_line(app: &AppHandle, line: &str) {
                         .and_then(Value::as_array)
                         .cloned()
                         .unwrap_or_default();
-                    let provider = event
-                        .get("provider")
-                        .and_then(Value::as_str)
-                        .unwrap_or("auto");
                     let model = event.get("model").and_then(Value::as_str).unwrap_or("");
                     if !session.is_empty() {
                         if let Some(shell) = app.try_state::<crate::Shell>() {
@@ -229,7 +226,7 @@ fn handle_line(app: &AppHandle, line: &str) {
                                 &crate::chats::dir(shell.data_dir()),
                                 &session,
                                 &messages,
-                                provider,
+                                "deepseek",
                                 model,
                             );
                             drop(shell);
@@ -240,7 +237,8 @@ fn handle_line(app: &AppHandle, line: &str) {
                     }
                     return;
                 }
-                if matches!(kind.as_str(), "session.result" | "session.error") && !session.is_empty()
+                if matches!(kind.as_str(), "session.result" | "session.error")
+                    && !session.is_empty()
                 {
                     if let Some(workspace) = app.try_state::<Arc<Workspace>>() {
                         workspace.with(|manager| manager.unlock_session(&session));
@@ -298,14 +296,24 @@ fn emit(app: &AppHandle, event: AgentEvent) {
 pub struct AgentSendOutcome {
     pub ok: bool,
     pub message: Option<String>,
+    pub needs_key: bool,
 }
 
-fn provider_name(value: Option<&str>) -> &'static str {
-    match value.unwrap_or("auto") {
-        "anthropic" => "anthropic",
-        "openai" => "openai",
-        "deepseek" => "deepseek",
-        _ => "auto",
+impl AgentSendOutcome {
+    fn fail(message: &str, needs_key: bool) -> Self {
+        Self {
+            ok: false,
+            message: Some(message.into()),
+            needs_key,
+        }
+    }
+
+    fn sent() -> Self {
+        Self {
+            ok: true,
+            message: None,
+            needs_key: false,
+        }
     }
 }
 
@@ -316,29 +324,21 @@ pub fn agent_send(
     shell: State<'_, crate::Shell>,
     session_id: String,
     text: String,
-    provider: Option<String>,
 ) -> Result<AgentSendOutcome, String> {
     let text = text.trim();
     if text.is_empty() {
-        return Ok(AgentSendOutcome {
-            ok: false,
-            message: Some("Type a message first.".into()),
-        });
+        return Ok(AgentSendOutcome::fail("Type a message first.", false));
     }
     if !crate::tabs::llm_key_set() {
-        return Ok(AgentSendOutcome {
-            ok: false,
-            message: Some("Set BUHO_LLM_KEY to talk to the model.".into()),
-        });
+        return Ok(AgentSendOutcome::fail(
+            "Paste a buho_llm token to talk to the model.",
+            true,
+        ));
     }
     if !harness.alive() {
-        return Ok(AgentSendOutcome {
-            ok: false,
-            message: Some("The agent is not running.".into()),
-        });
+        return Ok(AgentSendOutcome::fail("The agent is not running.", false));
     }
     let folder = crate::chats::dir(shell.data_dir());
-    let choice = provider_name(provider.as_deref());
     let (agent_id, tab_id, mcp) = app.state::<Arc<Workspace>>().with(|manager| {
         let agent_id = manager
             .agent_by_session(&session_id)
@@ -348,31 +348,23 @@ pub fn agent_send(
         let mcp = tab_id
             .as_ref()
             .and_then(|id| manager.offer(id))
-            .map(|offer| {
-                json!([{ "name": offer.name, "url": offer.url, "tabId": tab_id }])
-            })
+            .map(|offer| json!([{ "name": offer.name, "url": offer.url, "tabId": tab_id }]))
             .unwrap_or_else(|| json!([]));
         (agent_id, tab_id, mcp)
     });
-    let saved = crate::chats::append_user(&folder, &agent_id, &session_id, text, choice)?;
+    let saved = crate::chats::append_user(&folder, &agent_id, &session_id, text, "deepseek")?;
     crate::tabs::note_chat_title(&app, &session_id, &saved.title);
     if !harness.turn(
         &session_id,
         text,
         tab_id.as_deref(),
         mcp,
-        choice,
+        "deepseek",
         &Value::Array(saved.messages),
     ) {
-        return Ok(AgentSendOutcome {
-            ok: false,
-            message: Some("The agent is not running.".into()),
-        });
+        return Ok(AgentSendOutcome::fail("The agent is not running.", false));
     }
-    Ok(AgentSendOutcome {
-        ok: true,
-        message: None,
-    })
+    Ok(AgentSendOutcome::sent())
 }
 
 #[tauri::command]
