@@ -1,11 +1,20 @@
 mod agent_context;
 mod app_update;
 mod browser;
+mod catalog;
+mod chats;
 mod control;
 mod deploy;
+mod engine;
+mod harness;
+mod host;
+mod http_gate;
 mod journal;
+mod permissions;
+mod sandbox;
 mod server;
 mod settings;
+mod tabs;
 mod terminal;
 
 use std::path::{Path, PathBuf};
@@ -13,7 +22,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use control::{BridgeTarget, PageExecutor, public_app_url, remembered_app_url, serve_control};
+use control::{BridgeTarget, public_app_url, remembered_app_url, serve_control};
+use host::HostExecutor;
 use serde::Serialize;
 use serde_json::Value;
 use server::{ServerHandle, Session, serve_local};
@@ -111,6 +121,23 @@ impl Shell {
             &status,
             self.deploy_running.load(Ordering::SeqCst),
         ))
+    }
+
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    pub(crate) fn catalog(&self) -> Result<catalog::CatalogView, String> {
+        let status = self
+            .deploy_status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        catalog::catalog_view(
+            &self.data_dir,
+            &status,
+            self.deploy_running.load(Ordering::SeqCst),
+        )
     }
 
     fn session_state(&self, session: &Session) -> ShellState {
@@ -323,6 +350,11 @@ fn shell_state(shell: tauri::State<Shell>) -> ShellState {
 }
 
 #[tauri::command]
+fn catalog_view(shell: tauri::State<Shell>) -> Result<catalog::CatalogView, String> {
+    journal::logged("apps", shell.catalog())
+}
+
+#[tauri::command]
 fn available_versions() -> Result<deploy::ReleaseVersions, String> {
     journal::logged("newest versions", deploy::available_versions())
 }
@@ -506,6 +538,7 @@ fn start_deploy(app: AppHandle, shell: tauri::State<Shell>) -> Result<Deployment
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             *slot = message;
             let _ = handle.emit("deploy-status", slot.clone());
+            let _ = handle.emit("catalog-updated", ());
         };
         let outcome = deploy::provision(&data_dir, &mut report);
         let mut slot = status
@@ -519,6 +552,7 @@ fn start_deploy(app: AppHandle, shell: tauri::State<Shell>) -> Result<Deployment
             }
         };
         running.store(false, Ordering::SeqCst);
+        let _ = handle.emit("catalog-updated", ());
     });
     journal::logged("read setup", shell.deployment_view())
 }
@@ -558,6 +592,7 @@ fn start_https(app: AppHandle, shell: tauri::State<Shell>) -> Result<DeploymentV
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             *slot = message;
             let _ = handle.emit("deploy-status", slot.clone());
+            let _ = handle.emit("catalog-updated", ());
         };
         let outcome = deploy::install_https(&data_dir, &mut report);
         let mut slot = status
@@ -571,6 +606,7 @@ fn start_https(app: AppHandle, shell: tauri::State<Shell>) -> Result<DeploymentV
             }
         };
         running.store(false, Ordering::SeqCst);
+        let _ = handle.emit("catalog-updated", ());
     });
     journal::logged("read setup", shell.deployment_view())
 }
@@ -712,14 +748,12 @@ pub fn run() {
                     std::io::Error::new(std::io::ErrorKind::Other, err)
                 },
             )?;
-            let control = serve_control(Arc::new(PageExecutor::new(
-                app.handle().clone(),
-                setup_url.clone(),
-            )))
-            .map_err(|err| {
-                journal::write("start", &err);
-                std::io::Error::new(std::io::ErrorKind::Other, err)
-            })?;
+            let control = serve_control(Arc::new(HostExecutor::new(app.handle().clone()))).map_err(
+                |err| {
+                    journal::write("start", &err);
+                    std::io::Error::new(std::io::ErrorKind::Other, err)
+                },
+            )?;
             shell.set_mcp_url(control.mcp_url.clone());
             shell.set_mcp_token(control.token.clone());
             *bridge_for_setup
@@ -736,10 +770,17 @@ pub fn run() {
                 journal::write("start", &err.to_string());
                 std::io::Error::other(err.to_string())
             })?;
+            let workspace = Arc::new(tabs::Workspace::new());
+            let gate = permissions::PermissionGate::new();
+            let harness = harness::Harness::spawn(app.handle().clone());
             app.manage(control);
             app.manage(shell);
+            app.manage(workspace);
+            app.manage(gate);
+            app.manage(harness);
             app.manage(TerminalHost::new(data_dir));
             app.manage(browser::PreviewDock::new());
+            tabs::start_offer_poll(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -768,7 +809,29 @@ pub fn run() {
             delete_droplet,
             forget_resource,
             export_configuration,
-            download_backup
+            download_backup,
+            catalog_view,
+            tabs::workspace_state,
+            tabs::workspace_new_tab,
+            tabs::workspace_open_tab,
+            tabs::workspace_open_instance,
+            tabs::workspace_show,
+            tabs::workspace_focus_tab,
+            tabs::workspace_close_tab,
+            tabs::workspace_set_page_covered,
+            tabs::workspace_set_bounds,
+            tabs::workspace_navigate,
+            tabs::workspace_history,
+            tabs::workspace_new_agent,
+            tabs::workspace_close_agent,
+            tabs::workspace_open_chat,
+            tabs::workspace_focus_agent,
+            tabs::workspace_hide,
+            chats::agent_history,
+            chats::agent_transcript,
+            harness::agent_send,
+            harness::agent_stop,
+            permissions::gate_reply
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -838,5 +901,7 @@ mod tests {
         assert!(webviews.contains(&crate::terminal::TERMINAL_WEBVIEW));
         assert!(!webviews.contains(&crate::control::PAGE_WEBVIEW));
         assert!(!webviews.contains(&"*"));
+        assert!(!windows.iter().any(|label| label.starts_with("page-")));
+        assert!(!webviews.iter().any(|label| label.starts_with("page-")));
     }
 }

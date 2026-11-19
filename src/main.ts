@@ -1,9 +1,21 @@
 import { logError } from "./log";
-import { deploymentIsRunning, mountDeploy, refreshDeployment, watchForAppUpdate, watchForNewerRelease } from "./setup/deploy";
+import { bootHome, refreshCatalog } from "./apps/home";
+import { bootChrome } from "./chrome/shell";
+import {
+  deploymentIsRunning,
+  mountDeploy,
+  refreshDeployment,
+  watchForAppUpdate,
+  watchForNewerRelease,
+} from "./setup/deploy";
+import { bootWorkspace } from "./workspace/workspace";
 import "./styles.css";
 
 const summary = document.querySelector("#summary") as HTMLParagraphElement;
 
+bootChrome();
+bootHome();
+bootWorkspace();
 mountDeploy();
 
 async function boot(): Promise<void> {
@@ -11,11 +23,13 @@ async function boot(): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       await refreshDeployment();
+      await refreshCatalog();
       window.setInterval(() => {
         if (deploymentIsRunning()) {
           void refreshDeployment().catch((error: unknown) => {
             logError("setup", error);
           });
+          void refreshCatalog();
         }
       }, 2000);
       watchForNewerRelease();
@@ -27,7 +41,9 @@ async function boot(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
-  summary.textContent = last;
+  if (summary) {
+    summary.textContent = last;
+  }
 }
 
 void boot();

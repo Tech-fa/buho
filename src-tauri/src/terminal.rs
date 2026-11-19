@@ -100,11 +100,16 @@ impl TerminalHost {
             .map_err(|err| format!("Could not write to the terminal: {err}"))?;
 
         if let Some(home) = home_dir() {
-            if let Err(err) = self
-                .context
-                .publish(&home, generation, &place_from_env(&extra_env))
+            if std::env::var("BUHO_PATCH_CURSOR")
+                .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
             {
-                crate::journal::write("terminal", &err);
+                if let Err(err) = self
+                    .context
+                    .publish(&home, generation, &place_from_env(&extra_env))
+                {
+                    crate::journal::write("terminal", &err);
+                }
             }
         }
 

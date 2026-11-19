@@ -7,7 +7,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::control::LEAVE_CONFIRMATION_TO_THE_USER;
+const LEAVE_CONFIRMATION_TO_THE_USER: &str = "After you change the page, stop. Do not call submit_form, and do not click a confirmation button. The user approves the change by clicking that button.";
 
 /// Cursor's agent loads this server from `~/.cursor/mcp.json` for every project.
 pub const SERVER_NAME: &str = "app-shell-preview";

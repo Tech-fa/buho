@@ -14,12 +14,10 @@ const BRIDGE: &str = include_str!("bridge.js");
 
 /// Webview that shows the page the user opened. The agent tools drive this webview.
 pub const PAGE_WEBVIEW: &str = "app";
-pub const LEAVE_CONFIRMATION_TO_THE_USER: &str = "After you change the page, stop. Do not call submit_form, and do not click a confirmation button. The user approves the change by clicking that button.";
+pub const HOST_INSTRUCTIONS: &str = "You are in Buho, a desktop host. Use host tools for tabs and HTTP. Use connected MCP servers for the app in the page. Do not assume a product.";
 
-fn base_instructions() -> String {
-    format!(
-        "These tools control the app window open in Buho. Call list_pages, then navigate, then describe_page, then set_fields. Paths that contain :name need a real id from the open page. The tools change the window the user is looking at. {LEAVE_CONFIRMATION_TO_THE_USER}"
-    )
+pub fn is_page_webview(label: &str) -> bool {
+    label == PAGE_WEBVIEW || label.starts_with("page-")
 }
 
 pub struct BridgeTarget {
@@ -35,7 +33,7 @@ pub fn bridge_plugin<R: Runtime>(target: Arc<BridgeTarget>) -> tauri::plugin::Ta
     tauri::plugin::Builder::new("app-control")
         .on_page_load(move |webview, payload| {
             use tauri::webview::PageLoadEvent;
-            if payload.event() != PageLoadEvent::Finished || webview.label() != PAGE_WEBVIEW {
+            if payload.event() != PageLoadEvent::Finished || !is_page_webview(webview.label()) {
                 return;
             }
             let setup = target
@@ -99,18 +97,49 @@ pub trait ToolExecutor: Send + Sync {
 
     fn instructions(&self) -> String {
         match self.page_url() {
-            Some(url) => format!("{} The open page is {url}.", base_instructions()),
-            None => base_instructions(),
+            Some(url) => format!("{} The open page is {url}.", HOST_INSTRUCTIONS),
+            None => HOST_INSTRUCTIONS.to_string(),
         }
     }
 }
 
+pub fn invoke_bridge(
+    app: &AppHandle,
+    tab_id: &str,
+    name: &str,
+    arguments: &Value,
+) -> Result<Value, String> {
+    validate_call(name, arguments)?;
+    let webview = app
+        .get_webview(tab_id)
+        .ok_or_else(|| "Open a page first.".to_string())?;
+    let id = next_id();
+    webview
+        .eval(invocation_script(&id, name, arguments))
+        .map_err(|err| format!("Could not reach the open page: {err}"))?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let raw = eval_json(&webview, &poll_script(&id))?;
+        if !raw.is_empty() && raw != "null" {
+            let parsed: Value = serde_json::from_str(&raw)
+                .map_err(|err| format!("The page returned an unreadable result: {err}"))?;
+            return finish_call(&webview, parsed);
+        }
+        if Instant::now() >= deadline {
+            return Err("The page did not answer. Open the page, then try the tool again.".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[allow(dead_code)]
 pub struct PageExecutor {
     app: AppHandle,
     setup_url: String,
 }
 
 impl PageExecutor {
+    #[allow(dead_code)]
     pub fn new(app: AppHandle, setup_url: String) -> Self {
         Self { app, setup_url }
     }
@@ -118,35 +147,20 @@ impl PageExecutor {
 
 impl ToolExecutor for PageExecutor {
     fn call(&self, name: &str, arguments: &Value) -> Result<Value, String> {
-        validate_call(name, arguments)?;
+        let tab_id = arguments
+            .get("tabId")
+            .and_then(Value::as_str)
+            .unwrap_or(PAGE_WEBVIEW);
         let webview = self
             .app
-            .get_webview(PAGE_WEBVIEW)
-            .ok_or_else(|| "Open the app URL first.".to_string())?;
+            .get_webview(tab_id)
+            .ok_or_else(|| "Open a page first.".to_string())?;
         let current = webview.url().map_err(|err| err.to_string())?;
         let setup = Url::parse(&self.setup_url).map_err(|err| err.to_string())?;
         if is_shell_page(&current, &setup) {
-            return Err("Open the app URL first. These tools control that window.".into());
+            return Err("Open a page first. These tools control that window.".into());
         }
-        let id = next_id();
-        webview
-            .eval(invocation_script(&id, name, arguments))
-            .map_err(|err| format!("Could not reach the open app: {err}"))?;
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let raw = eval_json(&webview, &poll_script(&id))?;
-            if !raw.is_empty() && raw != "null" {
-                let parsed: Value = serde_json::from_str(&raw)
-                    .map_err(|err| format!("The app returned an unreadable result: {err}"))?;
-                return finish_call(&webview, parsed);
-            }
-            if Instant::now() >= deadline {
-                return Err(
-                    "The app did not answer. Open the app, then try the tool again.".into(),
-                );
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        invoke_bridge(&self.app, tab_id, name, arguments)
     }
 
     fn page_url(&self) -> Option<String> {
@@ -206,7 +220,7 @@ fn next_id() -> String {
 
 fn invocation_script(id: &str, name: &str, arguments: &Value) -> String {
     format!(
-        "{BRIDGE}\n;(() => {{\n  const id = {id};\n  const name = {name};\n  const args = {arguments};\n  window.__appControlResults = window.__appControlResults || {{}};\n  Promise.resolve()\n    .then(() => window.__appControl.call(name, args))\n    .then((result) => {{ window.__appControlResults[id] = {{ ok: true, result }}; }})\n    .catch((error) => {{ window.__appControlResults[id] = {{ ok: false, error: String(error && error.message || error) }}; }});\n}})();\n",
+        "{BRIDGE}\n;(() => {{\n  const id = {id};\n  const name = {name};\n  const args = {arguments};\n  window.__buhoControlResults = window.__buhoControlResults || {{}};\n  Promise.resolve()\n    .then(() => window.__buhoControl.call(name, args))\n    .then((result) => {{ window.__buhoControlResults[id] = {{ ok: true, result }}; }})\n    .catch((error) => {{ window.__buhoControlResults[id] = {{ ok: false, error: String(error && error.message || error) }}; }});\n}})();\n",
         id = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".into()),
         name = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".into()),
         arguments = arguments,
@@ -215,7 +229,7 @@ fn invocation_script(id: &str, name: &str, arguments: &Value) -> String {
 
 fn poll_script(id: &str) -> String {
     format!(
-        "(function () {{ var box = window.__appControlResults; if (!box) return null; var slot = box[{id}]; if (!slot) return null; delete box[{id}]; return slot; }})()",
+        "(function () {{ var box = window.__buhoControlResults; if (!box) return null; var slot = box[{id}]; if (!slot) return null; delete box[{id}]; return slot; }})()",
         id = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".into()),
     )
 }
@@ -497,7 +511,7 @@ fn initialize_result(body: &Value, executor: &dyn ToolExecutor) -> Value {
 pub fn tool_catalog() -> Value {
     json!({
         "name": "app-shell",
-        "instructions": base_instructions(),
+        "instructions": HOST_INSTRUCTIONS,
         "mcp": "/mcp",
         "tools": tool_definitions()
             .as_array()
@@ -516,64 +530,138 @@ pub fn tool_catalog() -> Value {
     })
 }
 
-fn tool_definitions() -> Value {
+pub fn tool_definitions() -> Value {
     json!([
         tool(
-            "list_pages",
-            "List the pages this app can open. Use a path from this list with navigate.",
+            "tabs.list",
+            "List browser tabs in Buho.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false })
+        ),
+        tool(
+            "tabs.open",
+            "Open a new browser tab in Buho.",
             json!({
                 "type": "object",
-                "properties": {},
+                "properties": { "url": { "type": "string" } },
+                "required": ["url"],
                 "additionalProperties": false
             })
         ),
         tool(
-            "navigate",
-            "Open a page in the app window. path is an app path such as /profile, or a URL on the same site.",
+            "tabs.focus",
+            "Focus a browser tab.",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            })
+        ),
+        tool(
+            "tabs.close",
+            "Close a browser tab.",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            })
+        ),
+        tool(
+            "browser.navigate",
+            "Open a URL in a browser tab. Pass tabId to choose the tab.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "App path or same-site URL." }
+                    "url": { "type": "string" },
+                    "tabId": { "type": "string" }
                 },
-                "required": ["path"],
+                "required": ["url"],
                 "additionalProperties": false
             })
         ),
         tool(
-            "describe_page",
-            "Read the page that is open: its path, forms, fields, and submit buttons.",
+            "browser.snapshot",
+            "Read the open page: title, headings, forms, fields, and links.",
             json!({
                 "type": "object",
-                "properties": {},
+                "properties": { "tabId": { "type": "string" } },
                 "additionalProperties": false
             })
         ),
         tool(
-            "set_fields",
-            "Set values on the form that is open. fields maps a field name, id, or label to the new value. Pass form when the page has more than one form.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "form": { "type": "string", "description": "Form id, name, or index. Omit when the page has one form." },
-                    "fields": {
-                        "type": "object",
-                        "description": "Field name, id, or label to the value to set.",
-                        "additionalProperties": true
-                    }
-                },
-                "required": ["fields"],
-                "additionalProperties": false
-            })
-        ),
-        tool(
-            "submit_form",
-            "Do not call this. The user approves the change by clicking the confirmation button.",
+            "browser.click",
+            "Click an element on the open page. selector is a CSS selector, id, name, or visible text.",
             json!({
                 "type": "object",
                 "properties": {
-                    "form": { "type": "string", "description": "Form id, name, or index. Omit when the page has one form." },
-                    "button": { "type": "string", "description": "Button label. Omit to use the form's submit button." }
+                    "selector": { "type": "string" },
+                    "text": { "type": "string" },
+                    "tabId": { "type": "string" }
                 },
+                "additionalProperties": false
+            })
+        ),
+        tool(
+            "browser.type",
+            "Type into an element on the open page.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "selector": { "type": "string" },
+                    "text": { "type": "string" },
+                    "tabId": { "type": "string" }
+                },
+                "required": ["selector", "text"],
+                "additionalProperties": false
+            })
+        ),
+        tool(
+            "browser.fill",
+            "Set the value of an element on the open page.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "selector": { "type": "string" },
+                    "value": {},
+                    "tabId": { "type": "string" }
+                },
+                "required": ["selector"],
+                "additionalProperties": false
+            })
+        ),
+        tool(
+            "http.request",
+            "Send an HTTP request. Allowed origins are the open app, its API, and localhost.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "method": { "type": "string" },
+                    "url": { "type": "string" },
+                    "headers": { "type": "object" },
+                    "body": {}
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            })
+        ),
+        tool(
+            "http.curl",
+            "Parse a curl command and send it as http.request. This does not run a shell.",
+            json!({
+                "type": "object",
+                "properties": { "command": { "type": "string" } },
+                "required": ["command"],
+                "additionalProperties": false
+            })
+        ),
+        tool(
+            "script.run",
+            "Run JavaScript in a Deno sandbox. Network is limited to the same HTTP allowlist. There is no filesystem.",
+            json!({
+                "type": "object",
+                "properties": { "code": { "type": "string" } },
+                "required": ["code"],
                 "additionalProperties": false
             })
         )
@@ -591,7 +679,18 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 fn known_tool(name: &str) -> bool {
     matches!(
         name,
-        "list_pages" | "navigate" | "describe_page" | "set_fields" | "submit_form"
+        "tabs.list"
+            | "tabs.open"
+            | "tabs.focus"
+            | "tabs.close"
+            | "browser.navigate"
+            | "browser.snapshot"
+            | "browser.click"
+            | "browser.type"
+            | "browser.fill"
+            | "http.request"
+            | "http.curl"
+            | "script.run"
     )
 }
 
@@ -600,13 +699,58 @@ fn validate_call(name: &str, arguments: &Value) -> Result<(), String> {
         return Err(format!("Unknown tool {name}."));
     }
     match name {
-        "navigate" => match arguments.get("path").and_then(|value| value.as_str()) {
-            Some(path) if !path.trim().is_empty() => Ok(()),
-            _ => Err("path is required.".into()),
+        "tabs.open" | "browser.navigate" => {
+            match arguments
+                .get("url")
+                .or_else(|| arguments.get("path"))
+                .and_then(Value::as_str)
+            {
+                Some(url) if !url.trim().is_empty() => Ok(()),
+                _ => Err("url is required.".into()),
+            }
+        }
+        "tabs.focus" | "tabs.close" => match arguments.get("id").and_then(Value::as_str) {
+            Some(id) if !id.trim().is_empty() => Ok(()),
+            _ => Err("id is required.".into()),
         },
-        "set_fields" => match arguments.get("fields") {
-            Some(Value::Object(fields)) if !fields.is_empty() => Ok(()),
-            _ => Err("fields must be an object of field names to values.".into()),
+        "browser.type" => match (
+            arguments.get("selector").and_then(Value::as_str),
+            arguments.get("text"),
+        ) {
+            (Some(selector), Some(_)) if !selector.trim().is_empty() => Ok(()),
+            _ => Err("selector and text are required.".into()),
+        },
+        "browser.fill" | "browser.click" => {
+            let selector = arguments
+                .get("selector")
+                .or_else(|| arguments.get("text"))
+                .or_else(|| arguments.get("label"))
+                .and_then(Value::as_str);
+            match selector {
+                Some(value) if !value.trim().is_empty() => Ok(()),
+                _ if name == "browser.click" => Err("selector or text is required.".into()),
+                _ => Err("selector is required.".into()),
+            }
+        }
+        "http.request" => match arguments.get("url").and_then(Value::as_str) {
+            Some(url) if !url.trim().is_empty() => Ok(()),
+            _ => Err("url is required.".into()),
+        },
+        "http.curl" => match arguments
+            .get("command")
+            .or_else(|| arguments.get("curl"))
+            .and_then(Value::as_str)
+        {
+            Some(command) if !command.trim().is_empty() => Ok(()),
+            _ => Err("command is required.".into()),
+        },
+        "script.run" => match arguments
+            .get("code")
+            .or_else(|| arguments.get("script"))
+            .and_then(Value::as_str)
+        {
+            Some(code) if !code.trim().is_empty() => Ok(()),
+            _ => Err("code is required.".into()),
         },
         _ => Ok(()),
     }
@@ -653,21 +797,24 @@ mod tests {
             panic!("initialize should reply");
         };
         let instructions = reply["result"]["instructions"].as_str().unwrap();
-        assert!(instructions.contains("list_pages"));
+        assert!(instructions.contains("Buho"));
         assert!(instructions.contains("https://app.example.com/home"));
-        assert!(instructions.contains(LEAVE_CONFIRMATION_TO_THE_USER));
+        assert!(!instructions.contains("submit_form"));
+        assert!(!instructions.contains("confirmation button"));
         let catalog = tool_definitions();
-        let submit = catalog
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|tool| tool["name"] == "submit_form")
-            .unwrap();
         assert!(
-            submit["description"]
-                .as_str()
+            catalog
+                .as_array()
                 .unwrap()
-                .contains("confirmation button")
+                .iter()
+                .any(|tool| tool["name"] == "browser.snapshot")
+        );
+        assert!(
+            catalog
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| tool["name"] != "submit_form")
         );
     }
 
@@ -686,13 +833,10 @@ mod tests {
     #[test]
     fn the_bridge_attaches_the_page_only_after_control_exists() {
         let script = bridge_script();
-        let assigned = script
-            .find("window.__appControl = {")
-            .expect("bridge installs page control");
-        let bound = script
-            .find("window.__bindAgentPageLinks")
-            .expect("bridge notifies the page");
-        assert!(assigned < bound);
+        assert!(script.contains("window.__buhoHost = true"));
+        assert!(script.contains("window.__buhoControl = {"));
+        assert!(!script.contains("__appControlHooks"));
+        assert!(!script.contains("submit_form"));
     }
 
     #[test]
@@ -707,11 +851,18 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "list_pages",
-                "navigate",
-                "describe_page",
-                "set_fields",
-                "submit_form"
+                "tabs.list",
+                "tabs.open",
+                "tabs.focus",
+                "tabs.close",
+                "browser.navigate",
+                "browser.snapshot",
+                "browser.click",
+                "browser.type",
+                "browser.fill",
+                "http.request",
+                "http.curl",
+                "script.run"
             ]
         );
     }
@@ -730,14 +881,14 @@ mod tests {
         let RpcOutcome::Reply(listed) = listed else {
             panic!("tools/list should reply");
         };
-        assert!(listed["result"]["tools"].as_array().unwrap().len() == 5);
+        assert!(listed["result"]["tools"].as_array().unwrap().len() == 12);
 
         let called = rpc_response(
             &json!({
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": { "name": "navigate", "arguments": { "path": "/profile" } }
+                "params": { "name": "browser.navigate", "arguments": { "url": "https://example.com" } }
             }),
             &executor,
         );
@@ -746,8 +897,8 @@ mod tests {
         };
         assert_eq!(called["result"]["isError"], false);
         assert_eq!(
-            called["result"]["structuredContent"]["arguments"]["path"],
-            "/profile"
+            called["result"]["structuredContent"]["arguments"]["url"],
+            "https://example.com"
         );
 
         let missing = rpc_response(
@@ -755,7 +906,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
-                "params": { "name": "navigate", "arguments": {} }
+                "params": { "name": "browser.navigate", "arguments": {} }
             }),
             &executor,
         );
@@ -789,7 +940,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|tool| tool["name"] == "set_fields")
+                .any(|tool| tool["name"] == "browser.snapshot")
         );
 
         let body = r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"agent","version":"0"}}}"#;

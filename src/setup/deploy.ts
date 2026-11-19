@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { openFourssWorkspace } from "../chrome/shell";
 import { logError } from "../log";
 import { DROPLET_SIZE, RESEND_URL, TOKEN_URL, type AppUpdate, type Deployment, type RegionChoice, type ReleaseVersions } from "./types";
 
@@ -351,6 +352,19 @@ function renderDeployment(next: Deployment): void {
     next.running && (activeWork === "domain" || (activeWork === "" && isDomainSecurityMessage(next.status)));
   domainPanel.hidden = !next.installed || (next.running && !domainBusy);
   runningActions.hidden = !ready;
+  const hasAddress = Boolean(next.appUrl);
+  const openRunning = document.querySelector("#open-running-app") as HTMLButtonElement | null;
+  const openFinished = document.querySelector("#open-running-app-finished") as HTMLButtonElement | null;
+  const pageOpen = pageForm.querySelector("button");
+  if (openRunning) {
+    openRunning.disabled = !hasAddress;
+  }
+  if (openFinished) {
+    openFinished.disabled = !hasAddress;
+  }
+  if (pageOpen instanceof HTMLButtonElement) {
+    pageOpen.disabled = !hasAddress;
+  }
   if (
     next.appUrl &&
     document.activeElement !== pageUrl &&
@@ -607,7 +621,15 @@ function setPageError(message: string): void {
   pageUrl.setAttribute("aria-invalid", message ? "true" : "false");
 }
 
+function appAddress(): string {
+  return deployment?.appUrl?.trim() ?? "";
+}
+
 async function openPage(raw: string): Promise<void> {
+  if (!appAddress()) {
+    setPageError("This app has no address yet.");
+    return;
+  }
   const address = raw.trim();
   if (!address) {
     setPageError("Type a full address, such as https://example.com.");
@@ -615,7 +637,8 @@ async function openPage(raw: string): Promise<void> {
   }
   setPageError("");
   try {
-    await invoke("open_in_app", { url: address });
+    openFourssWorkspace();
+    await invoke("workspace_open_tab", { url: address });
     pageUrl.value = address;
   } catch (error) {
     logError("open page", error);
@@ -629,10 +652,10 @@ export function mountDeploy(): void {
     void openPage(pageUrl.value);
   });
   document.querySelector("#open-running-app")?.addEventListener("click", () => {
-    void openPage(deployment?.appUrl ?? pageUrl.value);
+    void openPage(appAddress());
   });
   document.querySelector("#open-running-app-finished")?.addEventListener("click", () => {
-    void openPage(deployment?.appUrl ?? pageUrl.value);
+    void openPage(appAddress());
   });
   document.querySelector("#create-token")?.addEventListener("click", () => {
     void invoke("open_external", { url: TOKEN_URL });

@@ -1,5 +1,6 @@
-window.__installAppControl = function installAppControl() {
-  if (window.__appControl) return;
+window.__buhoHost = true;
+window.__installBuhoControl = function installBuhoControl() {
+  if (window.__buhoControl) return;
 
   function clean(text) {
     return String(text || "")
@@ -58,24 +59,6 @@ window.__installAppControl = function installAppControl() {
     return forms.length ? forms : [document.body];
   }
 
-  function findRoot(formKey) {
-    const roots = formRoots();
-    if (formKey == null || String(formKey).trim() === "") {
-      if (roots.length === 1) return roots[0];
-      throw new Error("This page has more than one form. Pass form.");
-    }
-    const key = String(formKey);
-    const byId = document.getElementById(key);
-    if (byId && (byId.tagName === "FORM" || byId === document.body)) return byId;
-    const named = roots.find(function (form) {
-      return form.name === key || form.id === key || form.getAttribute("aria-label") === key;
-    });
-    if (named) return named;
-    const index = Number(key);
-    if (String(index) === key && roots[index]) return roots[index];
-    throw new Error("No form matches " + key + ".");
-  }
-
   function describeRoot(root, index) {
     return {
       id: root.id || "",
@@ -88,27 +71,19 @@ window.__installAppControl = function installAppControl() {
     };
   }
 
-  function sameOrigin(href) {
-    try {
-      const url = new URL(href, location.href);
-      if (url.origin !== location.origin) return null;
-      return url;
-    } catch (error) {
-      return null;
-    }
-  }
-
   function pagesFrom(selector, limit) {
     const pages = [];
     const seen = {};
     Array.from(document.querySelectorAll(selector)).forEach(function (anchor) {
       if (pages.length >= limit) return;
-      const url = sameOrigin(anchor.href);
-      if (!url) return;
-      const path = url.pathname + url.search;
-      if (seen[path]) return;
-      seen[path] = true;
-      pages.push({ name: clean(anchor.textContent) || path, path: path });
+      if (!anchor.href) return;
+      try {
+        const url = new URL(anchor.href, location.href);
+        const path = url.pathname + url.search;
+        if (seen[path]) return;
+        seen[path] = true;
+        pages.push({ name: clean(anchor.textContent) || path, path: path, url: url.href });
+      } catch (error) {}
     });
     return pages;
   }
@@ -122,152 +97,103 @@ window.__installAppControl = function installAppControl() {
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function findControl(root, key) {
-    const all = controls(root).filter(function (el) {
-      return !el.disabled;
-    });
-    const exact = all.find(function (el) {
-      return el.name === key || el.id === key;
-    });
-    if (exact) return exact;
-    const wanted = norm(key);
-    return (
-      all.find(function (el) {
-        return norm(labelFor(el)) === wanted || norm(el.getAttribute("placeholder") || "") === wanted;
-      }) || null
-    );
+  function visible(el) {
+    const style = window.getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden" && el.getClientRects().length > 0;
   }
 
-  function setControl(root, el, value) {
-    const type = (el.getAttribute("type") || "").toLowerCase();
-    if (type === "checkbox") {
-      const on = value === true || value === "true" || value === "on" || value === 1 || value === "1";
-      el.checked = on;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return;
-    }
-    if (type === "radio") {
-      const group = Array.from(
-        root.querySelectorAll('input[type="radio"][name="' + cssEscape(el.name) + '"]'),
+  function query(selector) {
+    const key = String(selector || "").trim();
+    if (!key) throw new Error("selector is required.");
+    const byCss = document.querySelector(key);
+    if (byCss) return byCss;
+    const wanted = norm(key);
+    const nodes = Array.from(
+      document.querySelectorAll("button, a, input, textarea, select, [role=button], [aria-label]"),
+    ).filter(visible);
+    const match = nodes.find(function (el) {
+      return (
+        norm(el.id) === wanted ||
+        norm(el.name || "") === wanted ||
+        norm(labelFor(el)) === wanted ||
+        norm(buttonText(el)) === wanted ||
+        norm(el.getAttribute("placeholder") || "") === wanted
       );
-      const match = group.find(function (radio) {
-        return radio.value === String(value);
-      });
-      if (!match) throw new Error("No choice matches " + String(value) + ".");
-      match.checked = true;
-      match.dispatchEvent(new Event("input", { bubbles: true }));
-      match.dispatchEvent(new Event("change", { bubbles: true }));
-      return;
-    }
-    if (el.tagName === "SELECT") {
-      const wanted = String(value);
-      const option = Array.from(el.options).find(function (item) {
-        return item.value === wanted || clean(item.textContent) === wanted;
-      });
-      if (!option) throw new Error("No option matches " + wanted + ".");
-      setNativeValue(el, option.value);
-      return;
-    }
-    setNativeValue(el, value == null ? "" : String(value));
+    });
+    if (!match) throw new Error("No element matches " + key + ".");
+    return match;
   }
 
   const builtins = {
-    list_pages: function () {
-      const pages = pagesFrom("nav a[href], header a[href], [role=navigation] a[href]", 80);
-      return { pages: pages };
-    },
-    describe_page: function () {
+    "browser.snapshot": function () {
       const roots = formRoots();
       return {
         url: location.href,
         path: location.pathname + location.search + location.hash,
         title: document.title,
+        headings: Array.from(document.querySelectorAll("h1, h2, h3"))
+          .map(function (node) {
+            return clean(node.textContent);
+          })
+          .filter(Boolean)
+          .slice(0, 20),
         forms: roots.map(describeRoot),
         links: pagesFrom("a[href]", 40),
       };
     },
-    navigate: function (args) {
-      const path = String((args && args.path) || "").trim();
-      if (!path) throw new Error("path is required.");
-      const url = new URL(path, location.href);
-      if (url.origin !== location.origin) throw new Error("That path is outside this app.");
-      return {
-        path: url.pathname + url.search + url.hash,
-        navigateTo: url.href,
-      };
-    },
-    set_fields: function (args) {
-      const fields = args && args.fields;
-      if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
-        throw new Error("fields must be an object of field names to values.");
+    "browser.navigate": function (args) {
+      const href = String((args && (args.url || args.path)) || "").trim();
+      if (!href) throw new Error("url is required.");
+      const url = new URL(href, location.href);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        throw new Error("The page URL must start with http:// or https://.");
       }
-      const keys = Object.keys(fields);
-      if (!keys.length) throw new Error("fields must include at least one field.");
-      const root = findRoot(args.form);
-      const set = [];
-      const missing = [];
-      keys.forEach(function (key) {
-        const el = findControl(root, key);
-        if (!el) {
-          missing.push(key);
-          return;
-        }
-        setControl(root, el, fields[key]);
-        set.push(key);
-      });
-      if (!set.length) throw new Error("None of those fields are on this form.");
-      return { set: set, missing: missing, form: describeRoot(root, 0) };
+      return { url: url.href, navigateTo: url.href };
     },
-    submit_form: function (args) {
-      const root = findRoot(args && args.form);
-      const buttons = Array.from(root.querySelectorAll("button, input[type=submit]")).filter(function (button) {
-        return !button.disabled;
-      });
-      let button = null;
-      if (args && args.button) {
-        const wanted = norm(args.button);
-        button = buttons.find(function (item) {
-          return norm(buttonText(item)) === wanted;
+    "browser.click": function (args) {
+      const el = query((args && (args.selector || args.text)) || "");
+      el.click();
+      return { clicked: true, text: buttonText(el) || clean(el.textContent) };
+    },
+    "browser.type": function (args) {
+      const el = query((args && args.selector) || "");
+      const text = args && args.text != null ? String(args.text) : "";
+      el.focus();
+      if ("value" in el) setNativeValue(el, String(el.value || "") + text);
+      else {
+        el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, data: text }));
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      return { typed: true, text: text };
+    },
+    "browser.fill": function (args) {
+      const el = query((args && (args.selector || args.label)) || "");
+      const value = args && args.value != null ? args.value : "";
+      if (el.tagName === "SELECT") {
+        const wanted = String(value);
+        const option = Array.from(el.options).find(function (item) {
+          return item.value === wanted || clean(item.textContent) === wanted;
         });
-        if (!button) throw new Error("No button matches " + args.button + ".");
+        if (!option) throw new Error("No option matches " + wanted + ".");
+        setNativeValue(el, option.value);
+      } else if ((el.getAttribute("type") || "").toLowerCase() === "checkbox") {
+        el.checked = value === true || value === "true" || value === "on" || value === 1 || value === "1";
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
       } else {
-        button =
-          buttons.find(function (item) {
-            return (item.getAttribute("type") || "").toLowerCase() === "submit";
-          }) ||
-          buttons.find(function (item) {
-            return /save|submit|create|update|log in|sign in/i.test(buttonText(item));
-          }) ||
-          null;
+        setNativeValue(el, value == null ? "" : String(value));
       }
-      if (button) {
-        button.click();
-        return { submitted: true, button: buttonText(button) };
-      }
-      if (typeof root.requestSubmit === "function") {
-        root.requestSubmit();
-        return { submitted: true, button: "" };
-      }
-      throw new Error("This page has no submit button.");
+      return { filled: true, selector: args.selector || args.label || "" };
     },
   };
 
-  window.__appControl = {
-    builtins: builtins,
+  window.__buhoControl = {
     call: async function (name, args) {
-      const hooks = window.__appControlHooks;
-      const hook = hooks && hooks[name];
-      if (typeof hook === "function") return await hook(args || {});
       const builtin = builtins[name];
       if (typeof builtin !== "function") throw new Error("Unknown tool " + name + ".");
       return await builtin(args || {});
     },
   };
-
-  if (typeof window.__bindAgentPageLinks === "function") {
-    window.__bindAgentPageLinks();
-  }
 };
 
-window.__installAppControl();
+window.__installBuhoControl();

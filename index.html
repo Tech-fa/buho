@@ -9,6 +9,14 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
+    <div id="chrome">
+      <header class="chrome-bar">
+        <button type="button" id="back-apps" hidden>Apps</button>
+        <button type="button" id="open-browser">Browser</button>
+        <p class="chrome-title">Buho</p>
+      </header>
+      <div id="view-home" class="view"></div>
+      <div id="view-setup" class="view" hidden>
     <main class="setup">
       <header>
         <p class="eyebrow">Setup</p>
@@ -256,7 +264,7 @@
 
       <section class="panel" id="page-panel">
         <h2>Open the app</h2>
-        <p>The address opens in your browser.</p>
+        <p>The address opens in a Buho tab.</p>
         <div class="actions" id="running-actions" hidden>
           <button id="open-running-app" class="primary" type="button">App is running</button>
         </div>
@@ -270,5 +278,60 @@
         <p id="page-error" class="error" role="alert"></p>
       </section>
     </main>
+      </div>
+      <div id="view-workspace" class="view" hidden>
+        <div class="workspace">
+          <section class="workspace-browser">
+            <header class="browser-chrome">
+              <div class="tab-row">
+                <div class="tab-strip" id="browser-tabs"></div>
+                <button type="button" id="new-browser-tab" aria-label="New tab" title="New tab">+</button>
+                <button type="button" id="open-agents" aria-label="Open agents" title="Open agents" aria-expanded="false" hidden>
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5 5 8l5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+              <div class="url-bar">
+                <button type="button" class="nav-btn" id="nav-back" aria-label="Back" title="Back" disabled>
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5 5 8l5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <button type="button" class="nav-btn" id="nav-forward" aria-label="Forward" title="Forward" disabled>
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5 11 8l-5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <button type="button" class="nav-btn" id="nav-reload" aria-label="Reload" title="Reload">
+                  <svg class="icon-reload" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.4-3.5M13 3v3H10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  <svg class="icon-stop" viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="0.8" fill="currentColor"/></svg>
+                </button>
+                <form id="url-form">
+                  <span class="url-scheme" id="url-scheme" aria-hidden="true"></span>
+                  <input id="url-input" type="text" inputmode="url" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Address" placeholder="Search or enter address" />
+                </form>
+              </div>
+              <div class="url-progress" id="url-progress" hidden></div>
+            </header>
+            <div class="browser-page" id="content-slot"></div>
+          </section>
+          <div
+            class="workspace-split"
+            id="agent-resize"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize agent"
+            tabindex="0"
+          ></div>
+          <section class="workspace-agents">
+            <div class="tab-row agent-tab-row">
+              <div class="tab-strip" id="agent-tabs"></div>
+              <button type="button" id="agent-history-toggle" aria-expanded="false" title="Chat history">History</button>
+              <button type="button" id="new-agent-tab" aria-label="New chat" title="New chat">+</button>
+              <button type="button" id="collapse-agents" aria-label="Collapse agents" title="Collapse agents" aria-expanded="true">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5 11 8l-5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+            <div id="agent-history" class="agent-history" hidden></div>
+            <div id="agent-panes"></div>
+          </section>
+        </div>
+      </div>
+    </div>
   </body>
 </html>
