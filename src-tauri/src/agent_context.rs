@@ -199,7 +199,7 @@ pub fn rule_text(place: &AgentPlace) -> String {
         format!("\nThe app API is {}.", place.api_url)
     };
     format!(
-        "---\ndescription: Buho terminal\nalwaysApply: true\n---\n\n{RULE_MARKER}\n\n{page}{api}\n\nControl the preview with the MCP server named {SERVER_NAME}. Call list_pages, then navigate, then describe_page, then set_fields. Paths that contain :name need a real id from the open page. These tools change the window the user is looking at.\n\nCall describe_page before you change the page. Stay on that page unless the user asks you to open another one.\n\n{LEAVE_CONFIRMATION_TO_THE_USER}\n"
+        "---\ndescription: Buho terminal\nalwaysApply: true\n---\n\n{RULE_MARKER}\n\n{page}{api}\n\nControl the preview with the MCP server named {SERVER_NAME}. Call list_pages, then navigate, then describe_page, then set_fields. Paths that contain :name need a real id from the open page. These tools change the window the user is looking at.\n\nCall describe_page before you change the page. Stay on that page unless the user asks you to open another one. A successful API change reloads the open page.\n\n{LEAVE_CONFIRMATION_TO_THE_USER}\n"
     )
 }
 
@@ -553,6 +553,7 @@ mod tests {
         assert!(text.contains("describe_page"));
         assert!(text.contains(LEAVE_CONFIRMATION_TO_THE_USER));
         assert!(!text.contains("then submit_form"));
+        assert!(text.contains("A successful API change reloads the open page."));
         assert!(text.contains("http://127.0.0.1:3002"));
         assert!(!text.contains("secret-token"));
         assert!(!text.contains("token="));

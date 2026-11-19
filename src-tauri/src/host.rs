@@ -78,7 +78,9 @@ pub fn dispatch(
                 .get("url")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "url is required.".to_string())?;
-            tabs::open_tab(app, url)
+            let url = crate::engine::typed_address(url)?;
+            refuse_api_page(app, &url, None)?;
+            tabs::open_tab(app, &url)
         }
         "tabs.focus" => {
             let id = arguments
@@ -104,17 +106,57 @@ pub fn dispatch(
                 .ok_or_else(|| "url is required.".to_string())?;
             let id = tab_id.ok_or_else(|| "Open a page first.".to_string())?;
             let url = resolve_page_url(app, &id, raw)?;
+            let page = page_url_for(app, &id);
+            refuse_api_page(app, &url, page.as_deref())?;
             tabs::navigate_tab(app, &id, &url)
         }
         "browser.snapshot" | "browser.click" | "browser.type" | "browser.fill" => {
             let id = tab_id.ok_or_else(|| "Open a page first.".to_string())?;
             invoke_bridge(app, &id, name, arguments)
         }
-        "http.request" => http_gate::request_json(arguments, &allowlist(app)),
-        "http.curl" => http_gate::curl_json(arguments, &allowlist(app)),
-        "script.run" => sandbox::run_json(arguments, &allowlist(app)),
+        "http.request" | "http.curl" => {
+            let writes = call_writes(name, arguments);
+            let result = if name == "http.request" {
+                http_gate::request_json(arguments, &allowlist(app))
+            } else {
+                http_gate::curl_json(arguments, &allowlist(app))
+            };
+            note_page_refresh(app, writes, result)
+        }
+        "script.run" => {
+            let writes = sandbox::script_writes(script_code(arguments));
+            let result = sandbox::run_json(arguments, &allowlist(app));
+            note_page_refresh(app, writes, result)
+        }
         _ => Err(format!("Unknown tool {name}.")),
     }
+}
+
+fn refuse_api_page(app: &AppHandle, url: &str, page: Option<&str>) -> Result<(), String> {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return Ok(());
+    };
+    let api = app
+        .try_state::<Arc<Workspace>>()
+        .and_then(|workspace| workspace.api_origin());
+    if http_gate::browser_calls_api(&parsed, api.as_deref(), page) {
+        return Err(
+            "Do not call an API from the browser. Use http.curl or script.run with Python.".into(),
+        );
+    }
+    Ok(())
+}
+
+fn page_url_for(app: &AppHandle, tab_id: &str) -> Option<String> {
+    app.try_state::<Arc<Workspace>>()?
+        .with(|manager| {
+            manager
+                .list()
+                .iter()
+                .find(|tab| tab.id == tab_id)
+                .map(|tab| tab.url.clone())
+        })
+        .filter(|url| !url.is_empty())
 }
 
 fn resolve_page_url(app: &AppHandle, tab_id: &str, raw: &str) -> Result<String, String> {
@@ -177,6 +219,77 @@ fn tab_id_for(app: &AppHandle, session_id: Option<&str>, arguments: &Value) -> O
             manager.focused().map(|tab| tab.id.clone())
         }
     })
+}
+
+fn call_method(name: &str, arguments: &Value) -> Option<String> {
+    match name {
+        "http.request" => Some(
+            arguments
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or("GET")
+                .trim()
+                .to_ascii_uppercase(),
+        ),
+        "http.curl" => {
+            let command = arguments
+                .get("command")
+                .and_then(Value::as_str)
+                .or_else(|| arguments.get("curl").and_then(Value::as_str))?;
+            http_gate::parse_curl(command).ok().map(|req| req.method)
+        }
+        _ => None,
+    }
+}
+
+fn call_writes(name: &str, arguments: &Value) -> bool {
+    call_method(name, arguments).is_some_and(|method| http_gate::writes_data(&method))
+}
+
+fn script_code(arguments: &Value) -> &str {
+    arguments
+        .get("code")
+        .and_then(Value::as_str)
+        .or_else(|| arguments.get("script").and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+fn should_reload(writes: bool, value: &Value) -> bool {
+    writes && value.get("ok").and_then(Value::as_bool) == Some(true)
+}
+
+fn note_page_refresh(
+    app: &AppHandle,
+    writes: bool,
+    result: Result<Value, String>,
+) -> Result<Value, String> {
+    let mut value = result?;
+    if should_reload(writes, &value) && reload_focused_page(app) {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("pageRefreshed".to_string(), json!(true));
+        }
+    }
+    Ok(value)
+}
+
+fn reload_focused_page(app: &AppHandle) -> bool {
+    let Some(id) = app.try_state::<Arc<Workspace>>().and_then(|workspace| {
+        workspace.with(|manager| {
+            manager
+                .focused()
+                .filter(|tab| !tab.url.trim().is_empty())
+                .map(|tab| tab.id.clone())
+        })
+    }) else {
+        return false;
+    };
+    match tabs::reload_tab(app, &id) {
+        Ok(reloaded) => reloaded,
+        Err(err) => {
+            crate::journal::write("page refresh", &err);
+            false
+        }
+    }
 }
 
 fn allowlist(app: &AppHandle) -> Vec<String> {
@@ -244,5 +357,42 @@ fn curl_on_allowlist(app: &AppHandle, arguments: &Value) -> bool {
     match http_gate::parse_curl(command) {
         Ok(req) => url_on_allowlist(app, Some(&req.url)),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_successful_write_reloads_the_open_page() {
+        let created = json!({ "ok": true, "status": 201 });
+        let rejected = json!({ "ok": false, "status": 422 });
+        let read = json!({
+            "method": "GET",
+            "url": "https://api.example.com/items"
+        });
+        let write = json!({
+            "method": "post",
+            "url": "https://api.example.com/items"
+        });
+        let curl = json!({
+            "command": "curl https://api.example.com/items --data '{\"name\":\"a\"}'"
+        });
+        assert!(should_reload(call_writes("http.request", &write), &created));
+        assert!(!should_reload(
+            call_writes("http.request", &write),
+            &rejected
+        ));
+        assert!(!should_reload(call_writes("http.request", &read), &created));
+        assert!(should_reload(call_writes("http.curl", &curl), &created));
+        assert!(should_reload(
+            sandbox::script_writes("requests.post(url, json={'name': 'a'})"),
+            &json!({ "ok": true, "status": 0 })
+        ));
+        assert!(!should_reload(
+            sandbox::script_writes("requests.get(url)"),
+            &json!({ "ok": true, "status": 0 })
+        ));
     }
 }

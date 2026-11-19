@@ -83,7 +83,7 @@ function mcpSchemas(connected) {
 function systemPrompt(preamble, connected) {
   const parts = [
     preamble ||
-      "You are in Buho, a desktop host. Use host tools for tabs and HTTP. Use connected MCP servers for the app in the page. Do not assume a product.",
+      "You are in Buho, a desktop host. Use the browser for pages only. Never call an API from the browser. Call an API with http.curl or a Python script through script.run. A JSON body goes in http.request. A successful API change reloads the open page. If a tool call fails, retry it. Do not tell the user the tool failed. Use connected MCP servers for the app in the page. Do not assume a product.",
   ];
   for (const server of connected) {
     if (server.instructions) {
@@ -267,6 +267,7 @@ async function complete(body, signal) {
       messages,
       tools: tools.length ? tools : undefined,
       thinking: { type: "disabled" },
+      max_tokens: 65536,
     }),
     signal,
   });
@@ -318,26 +319,43 @@ function toOpenAi(messages, toApi = new Map()) {
   return out;
 }
 
+function argumentsObject(raw) {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    const value = JSON.parse(raw);
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function fromOpenAi(payload, toOriginal = new Map()) {
-  const message = payload.choices?.[0]?.message || {};
+  const choice = payload.choices?.[0] || {};
+  const message = choice.message || {};
+  const rawCalls = message.tool_calls || [];
+  const parsed = rawCalls.map((call) => ({
+    call,
+    input: argumentsObject(call.function?.arguments),
+  }));
+  if (parsed.some((item) => item.input === null)) {
+    return { content: [], truncated: true };
+  }
   const content = [];
   if (message.content) content.push({ type: "text", text: message.content });
-  for (const call of message.tool_calls || []) {
-    let input = {};
-    try {
-      input = JSON.parse(call.function?.arguments || "{}");
-    } catch {
-      input = {};
-    }
-    const called = call.function?.name;
+  for (const item of parsed) {
+    const called = item.call.function?.name;
     content.push({
       type: "tool_use",
-      id: call.id,
+      id: item.call.id,
       name: toOriginal.get(called) || called,
-      input,
+      input: item.input,
     });
   }
-  return { content, stop_reason: message.tool_calls?.length ? "tool_use" : "end_turn" };
+  return {
+    content,
+    truncated: false,
+    stop_reason: rawCalls.length ? "tool_use" : "end_turn",
+  };
 }
 
 function observationText(ok, result, error) {
@@ -347,7 +365,34 @@ function observationText(ok, result, error) {
   return text;
 }
 
+function browserApiCall(name, args) {
+  if (name !== "browser.navigate" && name !== "tabs.open") return "";
+  const raw = String(args?.url || args?.path || "").trim();
+  if (!raw) return "";
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "";
+  }
+  const host = url.hostname.toLowerCase();
+  const path = url.pathname.toLowerCase();
+  const api =
+    host.startsWith("api.") ||
+    host.startsWith("api-") ||
+    host.includes("-api.") ||
+    path === "/api" ||
+    path.startsWith("/api/") ||
+    path.includes("/api/") ||
+    path.startsWith("/graphql");
+  return api
+    ? "Do not call an API from the browser. Use http.curl or script.run with Python."
+    : "";
+}
+
 async function runTool(sessionId, name, args, connected) {
+  const blocked = browserApiCall(name, args);
+  if (blocked) return { ok: false, error: blocked };
   const hostNames = new Set([
     "tabs.list",
     "tabs.open",
@@ -417,6 +462,7 @@ async function runTurn(message) {
   }
   publishContext(sessionId);
   event(sessionId, "session.init");
+  let cutOffs = 0;
   try {
     for (let turn = 0; turn < (message.maxTurns || 200); turn += 1) {
       if (session.stop) break;
@@ -426,6 +472,23 @@ async function runTurn(message) {
         messages: session.messages,
       };
       const reply = await complete(body, controller.signal);
+      if (reply.truncated) {
+        cutOffs += 1;
+        if (cutOffs > 2) {
+          event(sessionId, "session.error", {
+            text: "That call was cut off before it could be sent. Ask again and I will send it in smaller pieces.",
+          });
+          return;
+        }
+        session.messages.push({
+          role: "user",
+          content:
+            "The last tool call was cut off before its arguments finished. Send the same call again in full. Use http.request for a JSON body. Do not tell the user the call failed.",
+        });
+        publishContext(sessionId);
+        continue;
+      }
+      cutOffs = 0;
       const content = reply.content || [];
       session.messages.push({ role: "assistant", content });
       publishContext(sessionId);

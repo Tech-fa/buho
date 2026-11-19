@@ -78,6 +78,7 @@ pub struct TabManager {
     instance_id: String,
     bounds: Bounds,
     origins: Vec<String>,
+    api_origin: Option<String>,
     offers: BTreeMap<String, McpOffer>,
     busy: BTreeMap<String, String>,
     pending_mcp: BTreeMap<String, String>,
@@ -481,6 +482,10 @@ impl Workspace {
         self.lock().origins.clone()
     }
 
+    pub fn api_origin(&self) -> Option<String> {
+        self.lock().api_origin.clone()
+    }
+
     pub fn set_origins(&self, origins: Vec<String>) {
         self.lock().origins = origins;
     }
@@ -729,6 +734,7 @@ pub fn workspace_open_instance(
             instance.app_url.as_deref(),
             instance.api_url.as_deref(),
         );
+        manager.api_origin = instance.api_url.clone().filter(|value| !value.is_empty());
         ensure_agents(&app, manager);
     });
     create_tab(&app, &url, Some(instance_id))?;
@@ -1094,6 +1100,32 @@ fn parse_offer(value: &Value) -> Option<McpOffer> {
         name: if name.is_empty() { "app".into() } else { name },
         url,
     })
+}
+
+pub fn reload_tab(app: &AppHandle, tab_id: &str) -> Result<bool, String> {
+    let open = app.try_state::<Arc<Workspace>>().is_some_and(|workspace| {
+        workspace.with(|manager| {
+            manager
+                .list()
+                .iter()
+                .any(|tab| tab.id == tab_id && !tab.url.trim().is_empty())
+        })
+    });
+    if !open {
+        return Ok(false);
+    }
+    let Some(webview) = app.get_webview(tab_id) else {
+        return Ok(false);
+    };
+    run_history(&webview, HistoryAction::Reload)?;
+    if let Some(workspace) = app.try_state::<Arc<Workspace>>() {
+        workspace.with(|manager| {
+            manager.apply_engine(tab_id, None, None, Some(true), None, None);
+        });
+        emit_state(app);
+    }
+    pull_history(app, &webview, tab_id);
+    Ok(true)
 }
 
 pub fn navigate_tab(app: &AppHandle, tab_id: &str, url: &str) -> Result<Value, String> {
