@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-shell"
-version = "1.0.7"
+version = "1.0.6"
 dependencies = [
  "base64 0.22.1",
  "objc2",

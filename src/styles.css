@@ -230,7 +230,8 @@ select:focus-visible {
 }
 
 #buho-update {
-  margin-top: 1.25rem;
+  flex: none;
+  margin: 0.75rem 1rem 0;
 }
 
 #buho-update p {

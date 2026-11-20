@@ -833,6 +833,10 @@ fn write_private_key(data_dir: &Path, private_key: &str) -> Result<PathBuf, Stri
     {
         fs::write(&path, private_key).map_err(|err| err.to_string())?;
     }
+    // OpenSSH offers the .pub beside this file. A public key left from an
+    // older key is what the server sees, so this private key never gets tried.
+    let _ = fs::remove_file(path.with_file_name("id_ed25519.pub"));
+    let _ = fs::remove_file(path.with_file_name("id_ed25519-cert.pub"));
     Ok(path)
 }
 
@@ -2355,6 +2359,28 @@ mod tests {
         write_sample_tar(&bundle, &[("database.sql", b"")]);
         assert!(pack_backup(&bundle, &destination).is_err());
         assert!(!destination.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replaced_private_key_does_not_keep_the_old_public_key() {
+        let dir = std::env::temp_dir().join(format!("shell-deploy-key-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let ssh = dir.join("ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("id_ed25519.pub"),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKey documents-shell\n",
+        )
+        .unwrap();
+        fs::write(ssh.join("id_ed25519-cert.pub"), "cert\n").unwrap();
+        let written = write_private_key(&dir, "-----BEGIN OPENSSH PRIVATE KEY-----\nnew\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(&written).unwrap(),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nnew\n"
+        );
+        assert!(!ssh.join("id_ed25519.pub").exists());
+        assert!(!ssh.join("id_ed25519-cert.pub").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
