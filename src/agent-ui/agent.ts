@@ -572,7 +572,10 @@ function showEvent(pane: Pane, event: AgentEvent): void {
     similar.addEventListener("click", () => answer(true, "tool"));
     all.addEventListener("click", () => answer(true, "all"));
     actions.append(allow, deny, similar, all);
-    pane.gate.append(text, args, actions);
+    const body = document.createElement("div");
+    body.className = "gate-body";
+    body.append(text, args);
+    pane.gate.append(body, actions);
   }
   if (event.type === "session.error" && event.text) {
     append(pane, bubble("assistant", event.text));

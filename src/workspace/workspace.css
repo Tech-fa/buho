@@ -426,6 +426,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .agent-pane[hidden] {
@@ -603,23 +604,51 @@
 }
 
 .gate-card {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100% - 0.5rem);
   margin: 0.5rem;
   padding: 0.75rem;
+  overflow: auto;
   border: 1px solid #fde68a;
   border-radius: 0.75rem;
   background: #fffbeb;
 }
 
+.gate-card[hidden] {
+  display: none !important;
+}
+
+.gate-body {
+  flex: 1 1 auto;
+  min-height: 2.5rem;
+  max-height: min(14rem, 40vh);
+  overflow: auto;
+}
+
+.gate-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .gate-card pre {
-  margin: 0.4rem 0;
+  margin: 0.4rem 0 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .gate-actions {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 0.45rem;
+  margin-top: 0.55rem;
+  position: sticky;
+  bottom: 0;
+  padding-top: 0.45rem;
+  background: #fffbeb;
 }
 
 .gate-actions button {
