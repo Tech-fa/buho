@@ -115,6 +115,7 @@ let availableRelease: ReleaseVersions | null = null;
 let releaseError = "";
 let releaseLoaded = false;
 let sawRunning = false;
+let appHealthy = false;
 let shownAppUrl = "";
 let shownDomain = "";
 let appDownloadUrl = "";
@@ -351,7 +352,7 @@ function renderDeployment(next: Deployment): void {
   const domainBusy =
     next.running && (activeWork === "domain" || (activeWork === "" && isDomainSecurityMessage(next.status)));
   domainPanel.hidden = !next.installed || (next.running && !domainBusy);
-  runningActions.hidden = !ready;
+  runningActions.hidden = !appHealthy;
   const hasAddress = Boolean(next.appUrl);
   const openRunning = document.querySelector("#open-running-app") as HTMLButtonElement | null;
   const openFinished = document.querySelector("#open-running-app-finished") as HTMLButtonElement | null;
@@ -360,6 +361,7 @@ function renderDeployment(next: Deployment): void {
     openRunning.disabled = !hasAddress;
   }
   if (openFinished) {
+    openFinished.hidden = !appHealthy;
     openFinished.disabled = !hasAddress;
   }
   if (pageOpen instanceof HTMLButtonElement) {
@@ -1112,6 +1114,32 @@ export function mountDeploy(): void {
     event.stopPropagation();
     closeErrorBanner(domainErrorBanner, domainErrorText, dismissedDomainError);
   });
+}
+
+export async function refreshAppHealth(): Promise<void> {
+  try {
+    const next = await invoke<boolean>("app_health");
+    if (next === appHealthy) {
+      return;
+    }
+    appHealthy = next;
+  } catch (error) {
+    logError("app health", error);
+    if (!appHealthy) {
+      return;
+    }
+    appHealthy = false;
+  }
+  if (deployment) {
+    renderDeployment(deployment);
+  }
+}
+
+export function watchAppHealth(): void {
+  void refreshAppHealth();
+  window.setInterval(() => {
+    void refreshAppHealth();
+  }, 8000);
 }
 
 export function deploymentIsRunning(): boolean {

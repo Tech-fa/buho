@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import readline from "node:readline";
+import { askInstructions, splitAsk } from "./questions.mjs";
 
 let llmKey = (process.env.BUHO_LLM_KEY || "").trim();
 const sessions = new Map();
@@ -84,6 +85,7 @@ function systemPrompt(preamble, connected) {
   const parts = [
     preamble ||
       "You are in Buho, a desktop host. Use the browser for pages only. Never call an API from the browser. Call an API with http.curl or a Python script through script.run. A JSON body goes in http.request. A successful API change reloads the open page. If a tool call fails, retry it. Do not tell the user the tool failed. Use connected MCP servers for the app in the page. Do not assume a product.",
+    askInstructions(),
   ];
   for (const server of connected) {
     if (server.instructions) {
@@ -490,10 +492,16 @@ async function runTurn(message) {
       }
       cutOffs = 0;
       const content = reply.content || [];
-      session.messages.push({ role: "assistant", content });
-      publishContext(sessionId);
       const texts = content.filter((part) => part.type === "text" && part.text);
+      const asked = splitAsk(texts.map((part) => part.text).join("\n")).questions.length > 0;
+      const stored = asked ? texts : content;
+      session.messages.push({ role: "assistant", content: stored });
+      publishContext(sessionId);
       for (const part of texts) event(sessionId, "assistant.text", { text: part.text });
+      if (asked) {
+        event(sessionId, "session.result", { text: texts.map((part) => part.text).join("\n") });
+        return;
+      }
       const calls = content.filter((part) => part.type === "tool_use");
       if (!calls.length) {
         event(sessionId, "session.result", { text: texts.map((part) => part.text).join("\n") });

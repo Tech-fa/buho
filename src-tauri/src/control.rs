@@ -155,7 +155,10 @@ impl ToolExecutor for PageExecutor {
             .app
             .get_webview(tab_id)
             .ok_or_else(|| "Open a page first.".to_string())?;
-        let current = webview.url().map_err(|err| err.to_string())?;
+        let current = match webview.url() {
+            Ok(url) => url,
+            Err(_) => return Err("Open a page first. These tools control that window.".into()),
+        };
         let setup = Url::parse(&self.setup_url).map_err(|err| err.to_string())?;
         if is_shell_page(&current, &setup) {
             return Err("Open a page first. These tools control that window.".into());

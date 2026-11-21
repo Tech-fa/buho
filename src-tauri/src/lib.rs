@@ -356,6 +356,18 @@ fn catalog_view(shell: tauri::State<Shell>) -> Result<catalog::CatalogView, Stri
 }
 
 #[tauri::command]
+fn app_health(shell: tauri::State<Shell>) -> bool {
+    let Ok(view) = shell.catalog() else {
+        return catalog::note_health(None);
+    };
+    let api_url = view
+        .instances
+        .first()
+        .and_then(|instance| instance.api_url.as_deref());
+    catalog::note_health(api_url.and_then(catalog::health_url))
+}
+
+#[tauri::command]
 fn available_versions() -> Result<deploy::ReleaseVersions, String> {
     journal::logged("newest versions", deploy::available_versions())
 }
@@ -831,6 +843,7 @@ pub fn run() {
             export_configuration,
             download_backup,
             catalog_view,
+            app_health,
             tabs::workspace_state,
             tabs::workspace_new_tab,
             tabs::workspace_open_tab,

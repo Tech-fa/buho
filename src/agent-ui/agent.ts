@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { answerChat, answerMessage, chatText } from "../../harness/questions.mjs";
+import type { AskQuestion } from "../../harness/questions.mjs";
 import { logError } from "../log";
 import type { AgentEvent, AgentTab } from "../contracts/events";
 
@@ -41,6 +43,8 @@ type Pane = {
   files: string[];
   fileRow: HTMLElement;
   gate: HTMLElement;
+  askForm: HTMLFormElement;
+  ask: AskQuestion[];
   running: boolean;
   watch: number | null;
   loaded: boolean;
@@ -198,7 +202,14 @@ function setRunning(pane: Pane, running: boolean): void {
   pane.running = running;
   pane.composer.disabled = running;
   pane.attach.disabled = running;
+  const askSubmit = pane.askForm.querySelector("button.primary");
+  if (askSubmit instanceof HTMLButtonElement) {
+    askSubmit.disabled = running;
+  }
   refreshSend(pane);
+  if (!running) {
+    focusAsk(pane);
+  }
   if (pane.watch !== null) {
     window.clearTimeout(pane.watch);
     pane.watch = null;
@@ -298,6 +309,9 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
   const gate = document.createElement("div");
   gate.className = "gate-card";
   gate.hidden = true;
+  const askForm = document.createElement("form");
+  askForm.className = "ask-card";
+  askForm.hidden = true;
   const composer = document.createElement("textarea");
   composer.rows = 1;
   composer.placeholder = "Ask the agent…";
@@ -323,7 +337,7 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
   const row = document.createElement("div");
   row.className = "composer";
   row.append(fileRow, composer, bar);
-  root.append(transcript, gate, row);
+  root.append(transcript, gate, askForm, row);
   host.append(root);
   const pane: Pane = {
     tab,
@@ -335,6 +349,8 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
     files: [],
     fileRow,
     gate,
+    askForm,
+    ask: [],
     running: false,
     watch: null,
     loaded: false,
@@ -361,6 +377,25 @@ function createPane(host: HTMLElement, tab: AgentTab): Pane {
       event.preventDefault();
       void submit(pane);
     }
+  });
+  askForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const questions = pane.ask;
+    if (pane.running || questions.length === 0) {
+      return;
+    }
+    const values = readAsk(askForm, questions);
+    const error = askForm.querySelector(".ask-error");
+    if (!values) {
+      if (error instanceof HTMLParagraphElement) {
+        error.hidden = false;
+        error.textContent = "Answer each question.";
+      }
+      return;
+    }
+    const text = answerMessage(questions, values);
+    paintAsk(pane, []);
+    void deliver(pane, text, answerChat(text) || text);
   });
   return pane;
 }
@@ -393,7 +428,12 @@ async function submit(pane: Pane): Promise<void> {
   grow(pane.composer);
   paintFiles(pane);
   refreshSend(pane);
-  append(pane, bubble("user", text));
+  paintAsk(pane, []);
+  void deliver(pane, text, text);
+}
+
+async function deliver(pane: Pane, text: string, shown: string): Promise<void> {
+  append(pane, bubble("user", shown));
   setRunning(pane, true);
   try {
     const outcome = await invoke<{ ok: boolean; message?: string; needsKey?: boolean }>("agent_send", {
@@ -418,6 +458,7 @@ async function submit(pane: Pane): Promise<void> {
 
 function paintStored(pane: Pane, messages: StoredMessage[]): void {
   const steps: string[] = [];
+  let pendingQuestions: AskQuestion[] = [];
   const flush = () => {
     if (steps.length === 0) {
       return;
@@ -432,20 +473,37 @@ function paintStored(pane: Pane, messages: StoredMessage[]): void {
     }
     steps.length = 0;
   };
+  const showUser = (text: string) => {
+    pendingQuestions = [];
+    const node = bubble("user", answerChat(text) || text);
+    node.dataset.raw = text;
+    append(pane, node);
+  };
   for (const message of messages) {
     const content = message.content;
     if (typeof content === "string") {
       flush();
-      append(pane, bubble(message.role === "user" ? "user" : "assistant", content));
+      if (message.role === "user") {
+        showUser(content);
+      } else {
+        pendingQuestions = showAssistant(pane, content);
+      }
       continue;
     }
     if (!Array.isArray(content)) {
       continue;
     }
+    if (message.role === "user") {
+      pendingQuestions = [];
+    }
     for (const part of content) {
       if (part.type === "text" && part.text) {
         flush();
-        append(pane, bubble(message.role === "user" ? "user" : "assistant", part.text));
+        if (message.role === "user") {
+          showUser(part.text);
+        } else {
+          pendingQuestions = showAssistant(pane, part.text);
+        }
       } else if (part.type === "tool_use" && part.name) {
         steps.push(`${part.name} ${JSON.stringify(part.input ?? {})}`);
       } else if (part.type === "tool_result") {
@@ -455,10 +513,7 @@ function paintStored(pane: Pane, messages: StoredMessage[]): void {
     }
   }
   flush();
-}
-
-function hasText(pane: Pane, kind: string, text: string): boolean {
-  return [...pane.transcript.querySelectorAll(`.bubble.${kind}`)].some((node) => node.textContent === text);
+  paintAsk(pane, pendingQuestions);
 }
 
 async function loadTranscript(pane: Pane): Promise<void> {
@@ -535,13 +590,135 @@ function gateButton(label: string, primary = false): HTMLButtonElement {
   return button;
 }
 
+function hasRaw(pane: Pane, text: string): boolean {
+  return [...pane.transcript.querySelectorAll<HTMLElement>("[data-raw]")].some((node) => node.dataset.raw === text);
+}
+
+function showAssistant(pane: Pane, text: string): AskQuestion[] {
+  const shown = chatText(text);
+  const node = bubble("assistant", shown.text);
+  node.dataset.raw = text;
+  append(pane, node);
+  return shown.questions;
+}
+
+function paintAsk(pane: Pane, questions: AskQuestion[]): void {
+  pane.ask = questions;
+  const form = pane.askForm;
+  form.replaceChildren();
+  pane.composer.placeholder = questions.length === 0 ? "Ask the agent…" : "Type a reply…";
+  if (questions.length === 0) {
+    form.hidden = true;
+    return;
+  }
+  form.hidden = false;
+  const kicker = document.createElement("p");
+  kicker.className = "ask-kicker";
+  kicker.textContent = "Questions";
+  form.append(kicker);
+  for (const question of questions) {
+    form.append(askItem(pane, question));
+  }
+  const error = document.createElement("p");
+  error.className = "ask-error";
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "primary";
+  submit.textContent = "Send answers";
+  submit.disabled = pane.running;
+  form.append(error, submit);
+  if (!pane.running) {
+    focusAsk(pane);
+  }
+}
+
+function askItem(pane: Pane, question: AskQuestion): HTMLElement {
+  const item = document.createElement("div");
+  item.className = "ask-item";
+  const prompt = document.createElement("p");
+  prompt.className = "ask-prompt";
+  prompt.id = askDomId(pane, question.id);
+  prompt.textContent = question.prompt;
+  item.append(prompt);
+  if (question.kind === "input") {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.name = question.id;
+    input.autocomplete = "off";
+    input.maxLength = 2000;
+    input.setAttribute("aria-labelledby", prompt.id);
+    item.append(input);
+    return item;
+  }
+  const choices = document.createElement("div");
+  choices.className = "choices";
+  choices.setAttribute("role", question.multiple ? "group" : "radiogroup");
+  choices.setAttribute("aria-labelledby", prompt.id);
+  for (const option of question.options) {
+    const label = document.createElement("label");
+    label.className = "choice";
+    const input = document.createElement("input");
+    input.type = question.multiple ? "checkbox" : "radio";
+    input.name = question.id;
+    input.value = option;
+    const text = document.createElement("span");
+    text.textContent = option;
+    label.append(input, text);
+    choices.append(label);
+  }
+  item.append(choices);
+  return item;
+}
+
+function askDomId(pane: Pane, questionId: string): string {
+  return `ask-${pane.tab.id}-${questionId}`.replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+function readAsk(form: HTMLFormElement, questions: AskQuestion[]): Record<string, string | string[]> | null {
+  const values: Record<string, string | string[]> = {};
+  for (const question of questions) {
+    if (question.kind === "input") {
+      const field = form.querySelector(`input[type="text"][name="${CSS.escape(question.id)}"]`);
+      const text = field instanceof HTMLInputElement ? field.value.trim() : "";
+      if (!text) {
+        return null;
+      }
+      values[question.id] = text;
+      continue;
+    }
+    const selected = [...form.querySelectorAll(`input[name="${CSS.escape(question.id)}"]:checked`)].flatMap((node) =>
+      node instanceof HTMLInputElement ? [node.value] : [],
+    );
+    const allowed = selected.filter((value) => question.options.includes(value));
+    if (allowed.length === 0 || (!question.multiple && allowed.length !== 1)) {
+      return null;
+    }
+    values[question.id] = question.multiple ? allowed : allowed[0];
+  }
+  return values;
+}
+
+function focusAsk(pane: Pane): void {
+  if (pane.root.hidden || pane.running || pane.askForm.hidden) {
+    return;
+  }
+  if (document.activeElement === pane.composer) {
+    return;
+  }
+  const first = pane.askForm.querySelector("input");
+  if (first instanceof HTMLElement) {
+    first.focus();
+  }
+}
+
 function showEvent(pane: Pane, event: AgentEvent): void {
   if (event.type === "assistant.text" && event.text) {
-    if (hasText(pane, "assistant", event.text)) {
-      return;
+    if (!hasRaw(pane, event.text)) {
+      closeThinking(pane);
+      paintAsk(pane, showAssistant(pane, event.text));
     }
-    closeThinking(pane);
-    append(pane, bubble("assistant", event.text));
   }
   if (event.type === "assistant.tool_call" && event.name) {
     addThinkingStep(pane, `${event.name} ${JSON.stringify(event.arguments ?? {})}`);

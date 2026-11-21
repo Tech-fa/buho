@@ -1,25 +1,26 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { logError } from "../log";
-import { openBrowser, openFourssSetup, openFourssWorkspace } from "../chrome/shell";
+import { openBrowser, openFourssSetup } from "../chrome/shell";
 import type { AppInstance, CatalogView, InstanceStatus } from "../contracts/catalog";
 import "./home.css";
 
 const root = document.querySelector("#view-home") as HTMLElement;
+
+let catalog: CatalogView | null = null;
+let appHealthy = false;
+
+function shownStatus(status: InstanceStatus): InstanceStatus {
+  if (status === "deploying") return "deploying";
+  if (appHealthy) return "running";
+  return status;
+}
 
 function labelFor(status: InstanceStatus): string {
   if (status === "running") return "Running";
   if (status === "deploying") return "Setting up";
   if (status === "error") return "Needs attention";
   return "Set up";
-}
-
-function hasAddress(instance: AppInstance): boolean {
-  return Boolean(instance.appUrl);
-}
-
-function actionFor(instance: AppInstance): string {
-  return hasAddress(instance) ? "Open" : "Set up";
 }
 
 function card(instance: AppInstance, summary: string): HTMLButtonElement {
@@ -32,16 +33,13 @@ function card(instance: AppInstance, summary: string): HTMLButtonElement {
   const detail = document.createElement("p");
   detail.textContent = summary;
   copy.append(title, detail);
+  const status = shownStatus(instance.status);
   const pill = document.createElement("span");
-  pill.className = `status-pill ${instance.status}`;
-  pill.textContent = `${labelFor(instance.status)} · ${actionFor(instance)}`;
+  pill.className = `status-pill ${status}`;
+  pill.textContent = `${labelFor(status)} · Settings`;
   button.append(copy, pill);
   button.addEventListener("click", () => {
-    if (hasAddress(instance)) {
-      openFourssWorkspace();
-    } else {
-      openFourssSetup();
-    }
+    openFourssSetup();
   });
   return button;
 }
@@ -80,14 +78,34 @@ function render(view: CatalogView): void {
 
 export async function refreshCatalog(): Promise<void> {
   try {
-    render(await invoke<CatalogView>("catalog_view"));
+    catalog = await invoke<CatalogView>("catalog_view");
+    render(catalog);
   } catch (error) {
     logError("apps", error);
   }
 }
 
+export async function refreshAppHealth(): Promise<void> {
+  let next = false;
+  try {
+    next = await invoke<boolean>("app_health");
+  } catch (error) {
+    logError("app health", error);
+  }
+  if (next === appHealthy) {
+    return;
+  }
+  appHealthy = next;
+  if (catalog) {
+    render(catalog);
+  }
+}
+
 export function bootHome(): void {
   void refreshCatalog();
+  window.setInterval(() => {
+    void refreshAppHealth();
+  }, 8000);
   void listen("catalog-updated", () => {
     void refreshCatalog();
   }).catch((error: unknown) => {

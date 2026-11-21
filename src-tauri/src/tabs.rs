@@ -566,9 +566,10 @@ fn attach_page(app: &AppHandle, tab: &BrowserTab, bounds: Bounds) -> Result<(), 
         })
         .on_document_title_changed(move |webview, title| {
             let id = webview.label().to_string();
-            let url = webview.url().ok().map(|parsed| parsed.to_string());
+            // The page address comes from navigation. Reading the webview URL
+            // here aborts while WebKit still has no address.
             let changed = title_handle.state::<Arc<Workspace>>().with(|manager| {
-                manager.apply_engine(&id, url.as_deref(), Some(&title), None, None, None)
+                manager.apply_engine(&id, None, Some(&title), None, None, None)
             });
             if changed {
                 emit_state(&title_handle);
@@ -620,14 +621,9 @@ fn attach_page(app: &AppHandle, tab: &BrowserTab, bounds: Bounds) -> Result<(), 
 fn pull_history(app: &AppHandle, webview: &Webview, tab_id: &str) {
     let handle = app.clone();
     let id = tab_id.to_string();
-    let url = webview
-        .url()
-        .ok()
-        .map(|parsed| parsed.to_string())
-        .and_then(|href| page_url_from_engine(&href));
     read_history_buttons(webview, move |back, forward| {
         let changed = handle.state::<Arc<Workspace>>().with(|manager| {
-            manager.apply_engine(&id, url.as_deref(), None, None, Some(back), Some(forward))
+            manager.apply_engine(&id, None, None, None, Some(back), Some(forward))
         });
         if changed {
             emit_state(&handle);

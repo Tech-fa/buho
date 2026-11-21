@@ -5,6 +5,7 @@ import {
   deploymentIsRunning,
   mountDeploy,
   refreshDeployment,
+  watchAppHealth,
   watchForAppUpdate,
   watchForNewerRelease,
 } from "./setup/deploy";
@@ -34,6 +35,7 @@ async function boot(): Promise<void> {
       }, 2000);
       watchForNewerRelease();
       watchForAppUpdate();
+      watchAppHealth();
       return;
     } catch (error) {
       logError("open the window", error);

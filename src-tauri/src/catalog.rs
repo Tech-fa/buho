@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
 use serde::Serialize;
 
 use crate::deploy::{self, DeploymentView};
@@ -61,8 +64,6 @@ pub fn from_deployment(view: &DeploymentView) -> CatalogView {
 fn instance_from(view: &DeploymentView) -> AppInstance {
     let status = if view.running {
         InstanceStatus::Deploying
-    } else if !view.app_url.is_empty() {
-        InstanceStatus::Running
     } else if !view.status.is_empty() && view.status != "Your app is ready." {
         InstanceStatus::Error
     } else {
@@ -84,6 +85,42 @@ fn instance_from(view: &DeploymentView) -> AppInstance {
         api_url,
         message: view.status.clone(),
     }
+}
+
+pub fn health_url(api_url: &str) -> Option<String> {
+    let base = api_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{base}/health"))
+}
+
+static HEALTH_OK: AtomicBool = AtomicBool::new(false);
+static HEALTH_BUSY: AtomicBool = AtomicBool::new(false);
+
+pub fn responds(url: &str) -> bool {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(2))
+        .timeout_read(Duration::from_secs(2))
+        .redirects(0)
+        .build();
+    agent.get(url).call().is_ok()
+}
+
+/// Returns the last health result without waiting. A new check runs on its own thread.
+pub fn note_health(url: Option<String>) -> bool {
+    let Some(url) = url else {
+        HEALTH_OK.store(false, Ordering::Relaxed);
+        return false;
+    };
+    if !HEALTH_BUSY.swap(true, Ordering::AcqRel) {
+        std::thread::spawn(move || {
+            let ok = responds(&url);
+            HEALTH_OK.store(ok, Ordering::Relaxed);
+            HEALTH_BUSY.store(false, Ordering::Release);
+        });
+    }
+    HEALTH_OK.load(Ordering::Relaxed)
 }
 
 fn nonempty(value: &str) -> Option<String> {
@@ -148,12 +185,12 @@ mod tests {
     }
 
     #[test]
-    fn an_app_url_means_running() {
+    fn an_address_does_not_mean_the_app_is_running() {
         let mut view = blank_view();
         view.app_url = "http://203.0.113.10".into();
         view.public_ip = "203.0.113.10".into();
         let catalog = from_deployment(&view);
-        assert_eq!(catalog.instances[0].status, InstanceStatus::Running);
+        assert_eq!(catalog.instances[0].status, InstanceStatus::NotInstalled);
         assert_eq!(
             catalog.instances[0].app_url.as_deref(),
             Some("http://203.0.113.10")
@@ -187,6 +224,29 @@ mod tests {
             from_deployment(&view).instances[0].message,
             "We could not finish making your app."
         );
+    }
+
+    #[test]
+    fn a_health_check_returns_before_the_server_answers() {
+        let started = std::time::Instant::now();
+        assert!(!note_health(Some(
+            "http://203.0.113.10:3012/health".into()
+        )));
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(!note_health(None));
+    }
+
+    #[test]
+    fn health_url_uses_the_api_address() {
+        assert_eq!(
+            health_url("http://203.0.113.10:3012").as_deref(),
+            Some("http://203.0.113.10:3012/health")
+        );
+        assert_eq!(
+            health_url("https://4ss-app-api.example.com/").as_deref(),
+            Some("https://4ss-app-api.example.com/health")
+        );
+        assert_eq!(health_url("  "), None);
     }
 
     #[test]
