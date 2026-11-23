@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import readline from "node:readline";
+import { toOpenAi } from "./messages.mjs";
+import { observationText } from "./observation.mjs";
 import { askInstructions, splitAsk } from "./questions.mjs";
 
 let llmKey = (process.env.BUHO_LLM_KEY || "").trim();
@@ -280,47 +282,6 @@ async function complete(body, signal) {
   return fromOpenAi(payload, names.toOriginal);
 }
 
-function toOpenAi(messages, toApi = new Map()) {
-  const out = [];
-  for (const message of messages) {
-    if (message.role === "user" && typeof message.content === "string") {
-      out.push({ role: "user", content: message.content });
-      continue;
-    }
-    if (message.role === "assistant") {
-      const text = (message.content || [])
-        .filter((part) => part.type === "text")
-        .map((part) => part.text)
-        .join("");
-      const tool_calls = (message.content || [])
-        .filter((part) => part.type === "tool_use")
-        .map((part) => ({
-          id: part.id,
-          type: "function",
-          function: { name: toApi.get(part.name) || part.name, arguments: JSON.stringify(part.input || {}) },
-        }));
-      out.push({
-        role: "assistant",
-        content: text || null,
-        tool_calls: tool_calls.length ? tool_calls : undefined,
-      });
-      continue;
-    }
-    if (message.role === "user" && Array.isArray(message.content)) {
-      for (const part of message.content) {
-        if (part.type === "tool_result") {
-          out.push({
-            role: "tool",
-            tool_call_id: part.tool_use_id,
-            content: String(part.content || ""),
-          });
-        }
-      }
-    }
-  }
-  return out;
-}
-
 function argumentsObject(raw) {
   if (typeof raw !== "string" || !raw.trim()) return null;
   try {
@@ -355,16 +316,10 @@ function fromOpenAi(payload, toOriginal = new Map()) {
   }
   return {
     content,
+    reasoning_content: typeof message.reasoning_content === "string" ? message.reasoning_content : undefined,
     truncated: false,
     stop_reason: rawCalls.length ? "tool_use" : "end_turn",
   };
-}
-
-function observationText(ok, result, error) {
-  const payload = ok ? result : { error };
-  const text = JSON.stringify(payload);
-  if (text.length > 8000) return `${text.slice(0, 8000)}\n[truncated]`;
-  return text;
 }
 
 function browserApiCall(name, args) {
@@ -495,7 +450,18 @@ async function runTurn(message) {
       const texts = content.filter((part) => part.type === "text" && part.text);
       const asked = splitAsk(texts.map((part) => part.text).join("\n")).questions.length > 0;
       const stored = asked ? texts : content;
-      session.messages.push({ role: "assistant", content: stored });
+      const assistant = { role: "assistant", content: stored };
+      if (typeof reply.reasoning_content === "string") {
+        assistant.reasoning_content = reply.reasoning_content;
+      }
+      const useful =
+        stored.some((part) => (part.type === "text" && part.text) || part.type === "tool_use") ||
+        typeof reply.reasoning_content === "string";
+      if (!useful) {
+        event(sessionId, "session.error", { text: "The model sent an empty reply. Ask again." });
+        return;
+      }
+      session.messages.push(assistant);
       publishContext(sessionId);
       for (const part of texts) event(sessionId, "assistant.text", { text: part.text });
       if (asked) {
@@ -526,7 +492,7 @@ async function runTurn(message) {
         results.push({
           type: "tool_result",
           tool_use_id: call.id,
-          content: observationText(ok, outcome?.result ?? outcome, outcome?.error || outcome?.message),
+          content: observationText(ok, outcome?.result ?? outcome, outcome?.error || outcome?.message, call.name),
         });
       }
       session.messages.push({ role: "user", content: results });
