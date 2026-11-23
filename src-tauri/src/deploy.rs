@@ -185,6 +185,14 @@ pub fn config_path(data_dir: &Path) -> PathBuf {
     data_dir.join(FILE_NAME)
 }
 
+pub fn load_config(data_dir: &Path) -> Option<DeploymentConfig> {
+    let path = config_path(data_dir);
+    if !path.is_file() {
+        return None;
+    }
+    read_config(&path).ok()
+}
+
 pub fn ensure_config(data_dir: &Path) -> Result<DeploymentConfig, String> {
     fs::create_dir_all(data_dir)
         .map_err(|err| format!("Could not create the app data folder: {err}"))?;

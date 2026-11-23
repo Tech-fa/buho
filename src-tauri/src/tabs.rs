@@ -985,6 +985,35 @@ pub fn workspace_hide(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn network_origins(app: &AppHandle) -> Vec<String> {
+    let mut origins = app
+        .try_state::<Arc<Workspace>>()
+        .map(|workspace| workspace.origins())
+        .unwrap_or_else(|| crate::http_gate::origins_from_instance(None, None));
+    if let Some((app_url, api_url)) = crate::fourss_endpoints(app) {
+        let pages = app
+            .try_state::<Arc<Workspace>>()
+            .map(|workspace| {
+                workspace.with(|manager| {
+                    manager
+                        .list()
+                        .iter()
+                        .map(|tab| tab.url.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default();
+        origins.extend(crate::http_gate::origins_for_open_app(
+            &pages,
+            &app_url,
+            api_url.as_deref(),
+        ));
+        origins.sort();
+        origins.dedup();
+    }
+    origins
+}
+
 pub fn start_offer_poll(app: AppHandle) {
     std::thread::spawn(move || {
         loop {
@@ -1023,18 +1052,17 @@ pub fn start_offer_poll(app: AppHandle) {
                         };
                         manager.set_offer(&tab_id, offer.clone());
                     });
-                    if !changed {
-                        return;
-                    }
                     if let Some(harness) = handle.try_state::<Arc<crate::harness::Harness>>() {
                         let harness = (*harness).clone();
                         if let Some(offer) = offer {
-                            let origins = handle.state::<Arc<Workspace>>().origins();
+                            let origins = network_origins(&handle);
                             let allowed = url::Url::parse(&offer.url)
                                 .map(|parsed| crate::http_gate::allowed(&parsed, &origins))
                                 .unwrap_or(false);
                             if allowed {
                                 harness.connect_mcp(&tab_id, &offer.name, &offer.url);
+                            } else if !changed {
+                                return;
                             } else if let Some(gate) =
                                 handle.try_state::<Arc<crate::permissions::PermissionGate>>()
                             {
@@ -1071,8 +1099,10 @@ pub fn start_offer_poll(app: AppHandle) {
                                     }
                                 });
                             }
-                        } else if let Some(previous) = previous {
-                            harness.disconnect_mcp(&tab_id, &previous.name);
+                        } else if changed {
+                            if let Some(previous) = previous {
+                                harness.disconnect_mcp(&tab_id, &previous.name);
+                            }
                         }
                     }
                 });

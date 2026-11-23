@@ -293,9 +293,7 @@ fn reload_focused_page(app: &AppHandle) -> bool {
 }
 
 fn allowlist(app: &AppHandle) -> Vec<String> {
-    app.try_state::<Arc<Workspace>>()
-        .map(|workspace| workspace.origins())
-        .unwrap_or_else(|| http_gate::origins_from_instance(None, None))
+    tabs::network_origins(app)
 }
 
 fn permit(

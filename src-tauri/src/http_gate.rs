@@ -74,6 +74,25 @@ fn looks_like_api(url: &Url) -> bool {
         || path.starts_with("/graphql")
 }
 
+pub fn page_is_app(page: &str, app_url: &str) -> bool {
+    match (Url::parse(page.trim()), Url::parse(app_url.trim())) {
+        (Ok(page), Ok(app)) => origin_of(&page) == origin_of(&app),
+        _ => false,
+    }
+}
+
+/// App and API origins while a browser tab is showing the Fourss app.
+pub fn origins_for_open_app(
+    pages: &[String],
+    app_url: &str,
+    api_url: Option<&str>,
+) -> Vec<String> {
+    if app_url.trim().is_empty() || !pages.iter().any(|page| page_is_app(page, app_url)) {
+        return Vec::new();
+    }
+    origins_from_instance(Some(app_url), api_url.filter(|value| !value.trim().is_empty()))
+}
+
 pub fn allowed(url: &Url, origins: &[String]) -> bool {
     if url.scheme() != "http" && url.scheme() != "https" {
         return false;
@@ -833,6 +852,45 @@ mod tests {
             Some("Bearer secret")
         );
         assert_eq!(req.body.as_deref(), Some(r#"{"ok":true}"#));
+    }
+
+    #[test]
+    fn an_open_fourss_page_allows_its_host_and_api() {
+        let pages = vec!["https://4ss-app.example.com/plan/integrations".to_string()];
+        let origins = origins_for_open_app(
+            &pages,
+            "https://4ss-app.example.com",
+            Some("https://4ss-app-api.example.com"),
+        );
+        let app = Url::parse("https://4ss-app.example.com/audits").unwrap();
+        let api = Url::parse("https://4ss-app-api.example.com/__agent-helper/mcp?token=abc").unwrap();
+        let other = Url::parse("https://slack.com/api").unwrap();
+        assert!(allowed(&app, &origins));
+        assert!(allowed(&api, &origins));
+        assert!(!allowed(&other, &origins));
+    }
+
+    #[test]
+    fn an_open_fourss_page_allows_the_ip_api_port() {
+        let pages = vec!["http://203.0.113.10/home".to_string()];
+        let origins = origins_for_open_app(
+            &pages,
+            "http://203.0.113.10",
+            Some("http://203.0.113.10:3012"),
+        );
+        let api = Url::parse("http://203.0.113.10:3012/health").unwrap();
+        assert!(allowed(&api, &origins));
+    }
+
+    #[test]
+    fn a_different_page_does_not_allow_fourss() {
+        let pages = vec!["https://example.com".to_string()];
+        let origins = origins_for_open_app(
+            &pages,
+            "https://4ss-app.example.com",
+            Some("https://4ss-app-api.example.com"),
+        );
+        assert!(origins.is_empty());
     }
 
     #[test]

@@ -287,6 +287,21 @@ fn try_load(data_dir: &Path, path: &Path) -> Result<(PathBuf, LoadedUi), String>
     Ok((ui_dir, loaded))
 }
 
+pub(crate) fn fourss_endpoints(app: &AppHandle) -> Option<(String, Option<String>)> {
+    let shell = app.try_state::<Shell>()?;
+    let config = deploy::load_config(shell.data_dir())?;
+    let view = deploy::view(config, "", false);
+    let instance = catalog::from_deployment(&view)
+        .instances
+        .into_iter()
+        .next()?;
+    let app_url = instance
+        .app_url
+        .filter(|value| !value.trim().is_empty())?;
+    let api_url = instance.api_url.filter(|value| !value.trim().is_empty());
+    Some((app_url, api_url))
+}
+
 fn agent_environment(shell: &Shell) -> Vec<(String, String)> {
     let mut env = {
         let session = shell

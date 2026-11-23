@@ -7,6 +7,8 @@ import { askInstructions, splitAsk } from "./questions.mjs";
 let llmKey = (process.env.BUHO_LLM_KEY || "").trim();
 const sessions = new Map();
 const mcp = new Map();
+const connecting = new Map();
+const failedAt = new Map();
 const pendingHost = new Map();
 let rpcId = 1;
 let hostId = 1;
@@ -154,6 +156,22 @@ async function connectMcp(name, url, tabId) {
   const keyName = `${tabId || ""}:${name}`;
   const existing = mcp.get(keyName);
   if (existing && existing.url === url) return;
+  const recent = failedAt.get(keyName);
+  if (recent && recent.url === url && Date.now() - recent.at < 2000) return;
+  if (connecting.get(keyName) === url) return;
+  connecting.set(keyName, url);
+  try {
+    await openMcp(keyName, name, url, tabId);
+    failedAt.delete(keyName);
+  } catch (error) {
+    failedAt.set(keyName, { url, at: Date.now() });
+    throw error;
+  } finally {
+    if (connecting.get(keyName) === url) connecting.delete(keyName);
+  }
+}
+
+async function openMcp(keyName, name, url, tabId) {
   const init = await mcpRpc(url, "initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
@@ -179,8 +197,24 @@ async function connectMcp(name, url, tabId) {
   });
 }
 
+async function connectListed(list, tabId) {
+  if (!Array.isArray(list)) return;
+  for (const item of list) {
+    const url = String(item?.url || "");
+    if (!url) continue;
+    try {
+      await connectMcp(String(item?.name || "app"), url, String(item?.tabId || tabId || ""));
+    } catch {
+      // The page poll retries while the Fourss app stays open.
+    }
+  }
+}
+
 function disconnectMcp(name, tabId) {
-  mcp.delete(`${tabId || ""}:${name}`);
+  const keyName = `${tabId || ""}:${name}`;
+  mcp.delete(keyName);
+  connecting.delete(keyName);
+  failedAt.delete(keyName);
 }
 
 function settleHost(id, value) {
@@ -408,6 +442,7 @@ async function runTurn(message) {
   session.stop = false;
   const controller = new AbortController();
   session.abort = controller;
+  await connectListed(message.mcp, message.tabId);
   const connected = connectedServers(message.tabId);
   const tools = [...hostSchemas(message.hostTools), ...mcpSchemas(connected)];
   session.provider = "deepseek";
