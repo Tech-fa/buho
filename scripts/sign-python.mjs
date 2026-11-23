@@ -46,15 +46,33 @@ function machOFiles(dir) {
   return found;
 }
 
+function keychainList() {
+  const listed = run("security", ["list-keychains", "-d", "user"]);
+  return listed
+    .split("\n")
+    .map((line) => line.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
+}
+
 const work = mkdtempSync(path.join(tmpdir(), "buho-python-sign-"));
 const keychain = path.join(work, "signing.keychain-db");
 const keychainPassword = randomBytes(24).toString("hex");
 const certificatePath = path.join(work, "certificate.p12");
+const previousKeychains = keychainList();
+const previousDefault = run("security", ["default-keychain"])
+  .trim()
+  .replace(/^"|"$/g, "");
+let keychainReady = false;
 try {
   writeFileSync(certificatePath, Buffer.from(certificate, "base64"));
   run("security", ["create-keychain", "-p", keychainPassword, keychain]);
+  keychainReady = true;
   run("security", ["set-keychain-settings", "-lut", "21600", keychain]);
   run("security", ["unlock-keychain", "-p", keychainPassword, keychain]);
+  // codesign does not look in a keychain unless it is on the search list.
+  // --keychain alone still reports "no identity found" on the GitHub runner.
+  run("security", ["list-keychains", "-d", "user", "-s", keychain, ...previousKeychains]);
+  run("security", ["default-keychain", "-s", keychain]);
   run("security", [
     "import",
     certificatePath,
@@ -77,14 +95,16 @@ try {
     keychain,
   ]);
   const listed = run("security", ["find-identity", "-v", "-p", "codesigning", keychain]);
-  const identity =
-    process.env.APPLE_SIGNING_IDENTITY ||
-    listed
-      .split("\n")
-      .map((line) => /"([^"]+)"/.exec(line)?.[1] || "")
-      .find((name) => name.includes("Developer ID Application"));
+  const identity = listed
+    .split("\n")
+    .map((line) => /"([^"]+)"/.exec(line)?.[1] || "")
+    .find((name) => name.includes("Developer ID Application"));
   if (!identity) {
     throw new Error("The Apple certificate has no Developer ID Application identity.");
+  }
+  const requested = process.env.APPLE_SIGNING_IDENTITY || "";
+  if (requested && !identity.includes(requested) && !requested.includes(identity)) {
+    throw new Error(`The certificate is ${identity}, which does not match APPLE_SIGNING_IDENTITY.`);
   }
   const files = machOFiles(pythonDir);
   if (files.length === 0) {
@@ -109,6 +129,14 @@ try {
   process.stderr.write(`${error.message || error}\n`);
   process.exitCode = 1;
 } finally {
-  spawnSync("security", ["delete-keychain", keychain]);
+  if (previousKeychains.length > 0) {
+    spawnSync("security", ["list-keychains", "-d", "user", "-s", ...previousKeychains]);
+  }
+  if (previousDefault) {
+    spawnSync("security", ["default-keychain", "-s", previousDefault]);
+  }
+  if (keychainReady) {
+    spawnSync("security", ["delete-keychain", keychain]);
+  }
   rmSync(work, { recursive: true, force: true });
 }
