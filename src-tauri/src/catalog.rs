@@ -229,9 +229,7 @@ mod tests {
     #[test]
     fn a_health_check_returns_before_the_server_answers() {
         let started = std::time::Instant::now();
-        assert!(!note_health(Some(
-            "http://203.0.113.10:3012/health".into()
-        )));
+        assert!(!note_health(Some("http://203.0.113.10:3012/health".into())));
         assert!(started.elapsed() < Duration::from_millis(200));
         assert!(!note_health(None));
     }

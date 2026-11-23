@@ -517,6 +517,24 @@ fn app_update(app: AppHandle) -> app_update::AppUpdate {
 }
 
 #[tauri::command]
+fn install_app_update(app: AppHandle) -> Result<(), String> {
+    static UPDATING: AtomicBool = AtomicBool::new(false);
+    if UPDATING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Buho is already updating.".into());
+    }
+    let current = app.package_info().version.to_string();
+    if let Err(err) = journal::logged("buho update", app_update::install(&current)) {
+        UPDATING.store(false, Ordering::SeqCst);
+        return Err(err);
+    }
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
 fn start_deploy(app: AppHandle, shell: tauri::State<Shell>) -> Result<DeploymentView, String> {
     if shell.backup_running.load(Ordering::SeqCst) {
         return journal::logged(
@@ -827,6 +845,7 @@ pub fn run() {
             deployment_state,
             available_versions,
             app_update,
+            install_app_update,
             save_deployment,
             save_host,
             save_own_server,

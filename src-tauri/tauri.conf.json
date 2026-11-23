@@ -4,9 +4,10 @@
   "version": "1.0.9",
   "identifier": "com.appshell.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "node scripts/fetch-node.mjs && node scripts/fetch-python.mjs && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "node scripts/fetch-node.mjs && node scripts/fetch-python.mjs && npm run build",
+    "beforeBundleCommand": "node scripts/sign-python.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -28,9 +29,17 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/node"
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist"
+    },
     "resources": {
       "../sample-ui/": "sample-ui/",
-      "../harness/": "harness/"
+      "../harness/": "harness/",
+      "binaries/LICENSE": "node-license.txt",
+      "binaries/python/": "python/"
     },
     "icon": [
       "icons/32x32.png",

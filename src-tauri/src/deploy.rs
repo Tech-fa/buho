@@ -2374,7 +2374,8 @@ mod tests {
         )
         .unwrap();
         fs::write(ssh.join("id_ed25519-cert.pub"), "cert\n").unwrap();
-        let written = write_private_key(&dir, "-----BEGIN OPENSSH PRIVATE KEY-----\nnew\n").unwrap();
+        let written =
+            write_private_key(&dir, "-----BEGIN OPENSSH PRIVATE KEY-----\nnew\n").unwrap();
         assert_eq!(
             fs::read_to_string(&written).unwrap(),
             "-----BEGIN OPENSSH PRIVATE KEY-----\nnew\n"

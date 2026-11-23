@@ -118,7 +118,7 @@ let sawRunning = false;
 let appHealthy = false;
 let shownAppUrl = "";
 let shownDomain = "";
-let appDownloadUrl = "";
+let updating = false;
 let activeWork: "" | "deploy" | "domain" = "";
 let workWasRunning = false;
 const dismissedDeployError = { value: "" };
@@ -564,13 +564,15 @@ export function watchForNewerRelease(): void {
 }
 
 function showAppUpdate(notice: AppUpdate): void {
-  if (!notice.updateAvailable || notice.downloadUrl.length === 0) {
-    buhoUpdate.hidden = true;
-    appDownloadUrl = "";
+  if (updating) {
     return;
   }
-  appDownloadUrl = notice.downloadUrl;
-  buhoUpdateText.textContent = `A newer Buho is ready. This copy is ${notice.currentVersion}. The newest is ${notice.latestVersion}. Download it, open the installer, and replace this copy.`;
+  if (!notice.updateAvailable) {
+    buhoUpdate.hidden = true;
+    return;
+  }
+  buhoUpdateText.textContent = `A newer Buho is ready. This copy is ${notice.currentVersion}. The newest is ${notice.latestVersion}.`;
+  buhoUpdateDownload.disabled = false;
   buhoUpdate.hidden = false;
 }
 
@@ -666,14 +668,22 @@ export function mountDeploy(): void {
     void invoke("open_external", { url: RESEND_URL });
   });
   buhoUpdateDownload.addEventListener("click", () => {
-    if (!appDownloadUrl) {
+    if (updating) {
       return;
     }
-    void invoke("open_external", { url: appDownloadUrl }).catch((error: unknown) => {
-      logError("buho update", error);
-      buhoUpdateText.textContent =
-        "We could not open the download page. Open buho.tech-fa.ca in a browser and download the newest Buho.";
-    });
+    updating = true;
+    buhoUpdateDownload.disabled = true;
+    buhoUpdateText.textContent = "Downloading the update. Leave this window open.";
+    void invoke("install_app_update")
+      .then(() => {
+        buhoUpdateText.textContent = "Installing the update. Buho will open again in a moment.";
+      })
+      .catch((error: unknown) => {
+        logError("buho update", error);
+        buhoUpdateText.textContent = plainMessage(String(error));
+        buhoUpdateDownload.disabled = false;
+        updating = false;
+      });
   });
   regionSelect.addEventListener("change", () => {
     if (regionSelect.value) {

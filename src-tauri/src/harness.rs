@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -47,6 +47,7 @@ pub struct Harness {
     stdin: Mutex<Option<ChildStdin>>,
     child: Mutex<Option<Child>>,
     reader: Mutex<Option<JoinHandle<()>>>,
+    start_error: Mutex<Option<String>>,
 }
 
 impl Harness {
@@ -55,56 +56,80 @@ impl Harness {
             stdin: Mutex::new(None),
             child: Mutex::new(None),
             reader: Mutex::new(None),
+            start_error: Mutex::new(None),
         });
-        if let Some(script) = script_path(&app) {
-            match Command::new("node")
-                .arg(&script)
-                .current_dir(script.parent().unwrap_or(std::path::Path::new(".")))
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .env("BUHO_LLM_KEY", crate::llm_key::key())
-                .spawn()
-            {
-                Ok(mut child) => {
-                    let stdout = child.stdout.take();
-                    let stdin = child.stdin.take();
-                    *harness
-                        .child
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(child);
-                    *harness
-                        .stdin
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = stdin;
-                    if let Some(stdout) = stdout {
-                        let handle = app.clone();
-                        let thread = std::thread::spawn(move || {
-                            let reader = BufReader::new(stdout);
-                            for line in reader.lines() {
-                                let Ok(line) = line else { break };
-                                if line.trim().is_empty() {
-                                    continue;
-                                }
-                                if line.len() > 1_000_000 {
-                                    crate::journal::write("harness", "sidecar line was too large");
-                                    continue;
-                                }
-                                handle_line(&handle, &line);
+        let Some(script) = script_path(&app) else {
+            harness.note_failure("The agent script is missing from the app.");
+            return harness;
+        };
+        let Some(node) = bundled_node() else {
+            harness.note_failure("The app is missing its Node runtime.");
+            return harness;
+        };
+        match Command::new(&node)
+            .arg(&script)
+            .current_dir(script.parent().unwrap_or(std::path::Path::new(".")))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .env("BUHO_LLM_KEY", crate::llm_key::key())
+            .spawn()
+        {
+            Ok(mut child) => {
+                let stdout = child.stdout.take();
+                let stdin = child.stdin.take();
+                *harness
+                    .child
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(child);
+                *harness
+                    .stdin
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = stdin;
+                if let Some(stdout) = stdout {
+                    let handle = app.clone();
+                    let thread = std::thread::spawn(move || {
+                        let reader = BufReader::new(stdout);
+                        for line in reader.lines() {
+                            let Ok(line) = line else { break };
+                            if line.trim().is_empty() {
+                                continue;
                             }
-                        });
-                        *harness
-                            .reader
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(thread);
-                    }
+                            if line.len() > 1_000_000 {
+                                crate::journal::write("harness", "sidecar line was too large");
+                                continue;
+                            }
+                            handle_line(&handle, &line);
+                        }
+                    });
+                    *harness
+                        .reader
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(thread);
                 }
-                Err(err) => {
-                    crate::journal::write("harness", &format!("Could not start the agent: {err}"));
-                }
+            }
+            Err(err) => {
+                harness.note_failure(format!("Could not start the agent: {err}"));
             }
         }
         harness
+    }
+
+    fn note_failure(&self, message: impl Into<String>) {
+        let message = message.into();
+        crate::journal::write("harness", &message);
+        *self
+            .start_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message);
+    }
+
+    fn unavailable(&self) -> String {
+        self.start_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_else(|| "The agent is not running.".into())
     }
 
     fn send(&self, value: &Value) -> bool {
@@ -178,6 +203,22 @@ impl Harness {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_some()
     }
+}
+
+fn node_file_name() -> &'static str {
+    if cfg!(windows) { "node.exe" } else { "node" }
+}
+
+fn node_beside(executable: &Path) -> Option<PathBuf> {
+    let path = executable.parent()?.join(node_file_name());
+    path.is_file().then_some(path)
+}
+
+fn bundled_node() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(node_beside)
 }
 
 fn script_path(app: &AppHandle) -> Option<PathBuf> {
@@ -336,7 +377,7 @@ pub fn agent_send(
         ));
     }
     if !harness.alive() {
-        return Ok(AgentSendOutcome::fail("The agent is not running.", false));
+        return Ok(AgentSendOutcome::fail(&harness.unavailable(), false));
     }
     let folder = crate::chats::dir(shell.data_dir());
     let (agent_id, tab_id, mcp) = app.state::<Arc<Workspace>>().with(|manager| {
@@ -392,4 +433,43 @@ pub fn agent_stop(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn scratch() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "buho-node-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_runtime_next_to_the_app_is_the_one_that_starts() {
+        let dir = scratch();
+        let app = dir.join("desktop-shell");
+        fs::write(&app, "").unwrap();
+        let runtime = dir.join(node_file_name());
+        fs::write(&runtime, "").unwrap();
+        assert_eq!(node_beside(&app), Some(runtime));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_machine_with_node_elsewhere_does_not_supply_the_runtime() {
+        let dir = scratch();
+        let app = dir.join("desktop-shell");
+        fs::write(&app, "").unwrap();
+        assert_eq!(node_beside(&app), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

@@ -568,9 +568,9 @@ fn attach_page(app: &AppHandle, tab: &BrowserTab, bounds: Bounds) -> Result<(), 
             let id = webview.label().to_string();
             // The page address comes from navigation. Reading the webview URL
             // here aborts while WebKit still has no address.
-            let changed = title_handle.state::<Arc<Workspace>>().with(|manager| {
-                manager.apply_engine(&id, None, Some(&title), None, None, None)
-            });
+            let changed = title_handle
+                .state::<Arc<Workspace>>()
+                .with(|manager| manager.apply_engine(&id, None, Some(&title), None, None, None));
             if changed {
                 emit_state(&title_handle);
             }
@@ -622,9 +622,9 @@ fn pull_history(app: &AppHandle, webview: &Webview, tab_id: &str) {
     let handle = app.clone();
     let id = tab_id.to_string();
     read_history_buttons(webview, move |back, forward| {
-        let changed = handle.state::<Arc<Workspace>>().with(|manager| {
-            manager.apply_engine(&id, None, None, None, Some(back), Some(forward))
-        });
+        let changed = handle
+            .state::<Arc<Workspace>>()
+            .with(|manager| manager.apply_engine(&id, None, None, None, Some(back), Some(forward)));
         if changed {
             emit_state(&handle);
         }

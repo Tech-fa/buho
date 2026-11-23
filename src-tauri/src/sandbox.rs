@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -110,17 +111,22 @@ pub fn run(code: &str, origins: &[String]) -> Result<Value, String> {
         return Err("This script has no allowed network hosts.".into());
     }
     let allow = hosts.join(",");
-    let child = Command::new("python3")
+    let python =
+        bundled_python().ok_or_else(|| "The app is missing its Python runtime.".to_string())?;
+    let child = Command::new(&python)
         .args(["-I", "-c", PYTHON_GUARD])
         .env("BUHO_NET", &allow)
         .env("BUHO_SCRIPT", code)
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONSTARTUP")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| "Python is not installed. Install Python to run scripts.".to_string())?;
+        .map_err(|err| format!("Could not start the Python runtime: {err}"))?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -288,6 +294,27 @@ fn close_paren(input: &str) -> Option<usize> {
     None
 }
 
+fn python_relative() -> &'static str {
+    if cfg!(windows) {
+        "python/python.exe"
+    } else {
+        "python/bin/python3"
+    }
+}
+
+fn python_in(root: &Path) -> Option<PathBuf> {
+    let path = root.join(python_relative());
+    path.is_file().then_some(path)
+}
+
+fn bundled_python() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    python_in(exe_dir)
+        .or_else(|| python_in(&exe_dir.join("../Resources")))
+        .or_else(|| python_in(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries")))
+}
+
 pub fn run_json(arguments: &Value, origins: &[String]) -> Result<Value, String> {
     let code = arguments
         .get("code")
@@ -315,12 +342,20 @@ mod tests {
     }
 
     #[test]
+    fn the_runtime_in_the_app_is_the_one_that_runs() {
+        let dir = std::env::temp_dir().join(format!("buho-python-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let program = dir.join(python_relative());
+        std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+        std::fs::write(&program, "").unwrap();
+        assert_eq!(python_in(&dir), Some(program));
+        assert_eq!(python_in(&dir.join("empty")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn python_prints_and_cannot_leave_the_allowlist() {
-        if std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
+        if bundled_python().is_none() {
             return;
         }
         let printed = run("print('hello')", &[]).unwrap();
